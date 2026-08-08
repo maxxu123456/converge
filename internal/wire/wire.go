@@ -31,6 +31,7 @@ func (w *Writer) String(s string) {
 
 var (
 	ErrTruncated  = errors.New("wire: truncated input")
+	ErrOverflow   = errors.New("wire: varint overflows uint64")
 	ErrNonMinimal = errors.New("wire: non-minimal varint")
 )
 
@@ -55,13 +56,18 @@ func (r *Reader) Byte() (byte, error) {
 }
 
 // Uvarint decodes a minimal-form LEB128 value. An encoding longer than
-// binary.AppendUvarint would produce for the same number is rejected.
+// binary.AppendUvarint would produce for the same number is rejected, as is
+// anything past ten bytes.
 func (r *Reader) Uvarint() (uint64, error) {
 	var v uint64
 	for n := uint(0); ; n++ {
 		b, err := r.Byte()
 		if err != nil {
 			return 0, err
+		}
+		// the tenth byte carries bit 63 alone, so anything above 0x01 is junk
+		if n == 9 && b > 0x01 {
+			return 0, ErrOverflow
 		}
 		if b < 0x80 {
 			// a trailing zero group means the writer padded the value out
@@ -80,12 +86,13 @@ func (r *Reader) Bytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	end := r.I + int(n)
-	if end > len(r.B) {
+	// compared as uint64: int(n) of a huge length wraps negative and the
+	// slice expression then panics instead of reporting truncation
+	if n > uint64(r.Remaining()) {
 		return nil, ErrTruncated
 	}
-	b := r.B[r.I:end]
-	r.I = end
+	b := r.B[r.I : r.I+int(n)]
+	r.I += int(n)
 	return b, nil
 }
 

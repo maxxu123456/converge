@@ -63,3 +63,9 @@ type UsageError struct {
 }
 
 func (e *UsageError) Error() string { return "converge: " + e.Msg }
+
+// decodeErr locates a decode failure. Wire-level errors are never returned to
+// callers: each blob kind names its own sentinel.
+func decodeErr(offset int, field string, sentinel error) *DecodeError {
+	return &DecodeError{Offset: offset, Field: field, Err: sentinel}
+}
