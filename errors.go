@@ -21,10 +21,9 @@ var ErrMalformedStateVector = errors.New("converge: malformed state vector")
 // wire format.
 var ErrMalformedPosition = errors.New("converge: malformed position")
 
-// ErrPendingOverflow is returned by ApplyUpdate when accepting the causally
-// blocked remainder of an update would exceed Options.MaxPendingStructs. The
-// ready part of the update HAS been applied, the blocked remainder was
-// discarded. Recover by sending a fresh SyncStep1 on every link.
+// ErrPendingOverflow means ApplyUpdate kept the ready part of an update and
+// dropped the blocked remainder over Options.MaxPendingStructs. Recover by
+// sending a fresh SyncStep1 on every link.
 var ErrPendingOverflow = errors.New("converge: causally-blocked buffer full")
 
 // DecodeError locates a decode failure. Err is one of the sentinels above.
@@ -43,10 +42,8 @@ func (e *DecodeError) Error() string {
 
 func (e *DecodeError) Unwrap() error { return e.Err }
 
-// RangeError is the value panicked when an index or length argument is out of
-// range. Indices are programmer input, so converge panics exactly as slice
-// indexing does. RangeError implements error so a recovering caller can
-// type-assert it.
+// RangeError is the value panicked when an index or length is out of range.
+// It implements error so a recovering caller can type-assert instead of parse.
 type RangeError struct {
 	Text   string // name of the Text
 	Index  int
@@ -59,10 +56,8 @@ func (e *RangeError) Error() string {
 		e.Text, e.Index, e.Length, e.Len)
 }
 
-// UsageError is the value panicked for an API contract violation that is always
-// a programming error: a *Tx used after its callback returned, a *Text passed to
-// a *Tx of a different Doc, an empty or invalid Text name, or invalid UTF-8
-// offered to Insert.
+// UsageError is the value panicked for an API contract violation: a Tx used
+// after its callback returned, a Text from another Doc, a bad name, bad UTF-8.
 type UsageError struct {
 	Msg string
 }

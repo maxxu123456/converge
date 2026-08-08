@@ -6,9 +6,8 @@ import (
 	"strconv"
 )
 
-// ClientID identifies a replica. It is minted from crypto/rand when a Doc is
-// created. Zero is reserved: it is the "no client" half of the zero ID, and
-// newClientID never returns it.
+// ClientID identifies a replica, minted from crypto/rand when a Doc is created.
+// Zero is reserved as the "no client" half of the zero ID.
 type ClientID uint64
 
 // String renders the id in hex, for diagnostics only.
@@ -29,9 +28,8 @@ func (id ID) String() string {
 	return id.Client.String() + ":" + strconv.FormatUint(id.Clock, 10)
 }
 
-// newClientID mints a non-zero 64-bit identity. crypto/rand, never math/rand: a
-// seeded PRNG across identically started containers is the classic way to
-// collide, and a ClientID collision is unrecoverable divergence.
+// newClientID mints a non-zero identity. crypto/rand, never math/rand: seeded
+// PRNGs across identical containers collide, and that is permanent divergence.
 func newClientID() ClientID {
 	var b [8]byte
 	for {
