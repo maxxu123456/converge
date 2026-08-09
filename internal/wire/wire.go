@@ -56,8 +56,7 @@ func (r *Reader) Byte() (byte, error) {
 }
 
 // Uvarint decodes a minimal-form LEB128 value. An encoding longer than
-// binary.AppendUvarint would produce for the same number is rejected, as is
-// anything past ten bytes.
+// binary.AppendUvarint would use, or longer than ten bytes, is rejected.
 func (r *Reader) Uvarint() (uint64, error) {
 	var v uint64
 	for n := uint(0); ; n++ {
