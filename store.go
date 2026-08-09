@@ -1,6 +1,7 @@
 package converge
 
 import (
+	"slices"
 	"sort"
 	"strconv"
 )
@@ -94,4 +95,39 @@ func (s *structStore) add(it *item) {
 	}
 	cb.blocks = append(cb.blocks, it)
 	cb.next = it.endClock()
+}
+
+// splitAt cuts it at rune offset off and returns the new right half. Both
+// halves keep the original deleted flag, so a split changes no visible length.
+func (s *structStore) splitAt(it *item, off uint32) *item {
+	if off == 0 || off >= it.runeLen {
+		panic("converge: store.splitAt: offset " + strconv.FormatUint(uint64(off), 10) +
+			" outside a run of " + strconv.FormatUint(uint64(it.runeLen), 10))
+	}
+	cb, i, ok := s.locate(it.id)
+	if !ok || cb.blocks[i] != it {
+		panic("converge: store.splitAt: item is not in the store")
+	}
+	byteOff := utf8ByteOffset(it.content, off)
+	right := &item{
+		id:          ID{it.id.Client, it.id.Clock + uint64(off)},
+		origin:      ID{it.id.Client, it.id.Clock + uint64(off) - 1},
+		rightOrigin: it.rightOrigin, // inherited, never recomputed
+		left:        it,
+		right:       it.right,
+		parent:      it.parent,
+		content:     it.content[byteOff:],
+		runeLen:     it.runeLen - off,
+		u16Len:      it.u16Len - utf16LenOf(it.content[:byteOff]),
+		deleted:     it.deleted,
+	}
+	it.content = it.content[:byteOff]
+	it.runeLen = off
+	it.u16Len -= right.u16Len
+	if right.right != nil {
+		right.right.left = right
+	}
+	it.right = right
+	cb.blocks = slices.Insert(cb.blocks, i+1, right)
+	return right
 }
