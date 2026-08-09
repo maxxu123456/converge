@@ -131,3 +131,24 @@ func (s *structStore) splitAt(it *item, off uint32) *item {
 	cb.blocks = slices.Insert(cb.blocks, i+1, right)
 	return right
 }
+
+// cleanStart returns the block that now starts at id.Clock, splitting the
+// containing block when it starts earlier. nil when the store lacks id.
+func (s *structStore) cleanStart(id ID) *item {
+	it := s.get(id)
+	if it == nil || it.id.Clock == id.Clock {
+		return it
+	}
+	return s.splitAt(it, uint32(id.Clock-it.id.Clock))
+}
+
+// cleanEnd returns the block that now ends at id.Clock, splitting the
+// containing block when it runs on. nil when the store lacks id.
+func (s *structStore) cleanEnd(id ID) *item {
+	it := s.get(id)
+	if it == nil || it.endClock() == id.Clock+1 {
+		return it
+	}
+	s.splitAt(it, uint32(id.Clock-it.id.Clock+1))
+	return it
+}
