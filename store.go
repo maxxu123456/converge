@@ -6,9 +6,8 @@ import (
 	"strconv"
 )
 
-// clientBlocks holds every run one client ever produced. The slice is ordered
-// by id.Clock and covers [0, next) with no gaps and no overlaps, which is what
-// makes the state vector one number per client and find a binary search.
+// clientBlocks holds every run one client ever produced, ordered by id.Clock
+// and covering [0, next) with no gaps and no overlaps.
 type clientBlocks struct {
 	blocks []*item
 	next   uint64 // endClock of the last block, 0 when empty
