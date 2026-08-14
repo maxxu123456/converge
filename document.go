@@ -10,6 +10,9 @@ type Doc struct {
 	clientID ClientID
 	roots    map[string]*Text
 	store    structStore
+
+	tx     Tx // the single reusable transaction value
+	txOpen bool
 }
 
 // Options configures a Doc. The zero Options is the default.
@@ -56,4 +59,21 @@ func (d *Doc) text(name string) *Text {
 		d.roots[name] = t
 	}
 	return t
+}
+
+// Transact runs fn as one atomic change. fn must not call any method on the Doc
+// or on a Text: the document lock is held for the whole callback.
+func (d *Doc) Transact(origin any, fn func(tx *Tx)) {
+	d.mu.Lock()
+	tx := d.begin(origin)
+	committed := false
+	// what fn already applied is in the list, so a panicking fn still commits
+	defer func() {
+		if !committed {
+			d.commit(tx)
+		}
+	}()
+	fn(tx)
+	committed = true
+	d.commit(tx)
 }
