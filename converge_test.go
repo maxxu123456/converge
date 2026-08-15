@@ -264,3 +264,190 @@ func TestOriginReachesTheTransaction(t *testing.T) {
 		}
 	})
 }
+
+// recovered runs fn and returns what it panicked with, or nil.
+func recovered(fn func()) (v any) {
+	defer func() { v = recover() }()
+	fn()
+	return nil
+}
+
+func wantRangeError(t *testing.T, v any, index, length, textLen int) {
+	t.Helper()
+	re, ok := v.(*RangeError)
+	if !ok {
+		t.Fatalf("panicked with %v (%T), want *RangeError", v, v)
+	}
+	if re.Index != index || re.Length != length || re.Len != textLen {
+		t.Errorf("RangeError{index %d, length %d, len %d}, want {%d, %d, %d}",
+			re.Index, re.Length, re.Len, index, length, textLen)
+	}
+	if re.Text != "body" {
+		t.Errorf("RangeError names %q, want %q", re.Text, "body")
+	}
+	if _, isErr := v.(error); !isErr {
+		t.Error("the panic value does not implement error")
+	}
+}
+
+func wantUsageError(t *testing.T, v any, msg string) {
+	t.Helper()
+	ue, ok := v.(*UsageError)
+	if !ok {
+		t.Fatalf("panicked with %v (%T), want *UsageError", v, v)
+	}
+	if !strings.Contains(ue.Error(), msg) {
+		t.Errorf("message %q does not mention %q", ue.Error(), msg)
+	}
+}
+
+func TestInsertAndDeleteRangePanics(t *testing.T) {
+	d := NewDoc()
+	tb := d.Text("body")
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "abc") })
+
+	wantRangeError(t, recovered(func() {
+		d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 4, "x") })
+	}), 4, 0, 3)
+	wantRangeError(t, recovered(func() {
+		d.Transact(nil, func(tx *Tx) { tx.Insert(tb, -1, "x") })
+	}), -1, 0, 3)
+	wantRangeError(t, recovered(func() {
+		d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 2, 2) })
+	}), 2, 2, 3)
+	wantRangeError(t, recovered(func() {
+		d.Transact(nil, func(tx *Tx) { tx.Delete(tb, -1, 1) })
+	}), -1, 1, 3)
+
+	// the index is checked before anything is mutated, and the Doc still works
+	if got := tb.String(); got != "abc" {
+		t.Fatalf("text is %q, want %q", got, "abc")
+	}
+	if itemCount(&d.store) != 1 {
+		t.Fatalf("a rejected op left %d items behind", itemCount(&d.store))
+	}
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 3, "d") })
+	if got := tb.String(); got != "abcd" {
+		t.Fatalf("text is %q, want %q", got, "abcd")
+	}
+}
+
+func TestSliceAndUTF16IndexPanics(t *testing.T) {
+	d := NewDoc()
+	tb := d.Text("body")
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "abc") })
+
+	wantRangeError(t, recovered(func() { tb.Slice(-1, 2) }), -1, 3, 3)
+	wantRangeError(t, recovered(func() { tb.Slice(1, 4) }), 1, 3, 3)
+	wantRangeError(t, recovered(func() { tb.Slice(2, 1) }), 2, -1, 3)
+	wantRangeError(t, recovered(func() { tb.UTF16Index(4) }), 4, 0, 3)
+	wantRangeError(t, recovered(func() { tb.UTF16Index(-1) }), -1, 0, 3)
+	wantRangeError(t, recovered(func() {
+		d.Transact(nil, func(tx *Tx) { tx.Slice(tb, 0, 9) })
+	}), 0, 9, 3)
+
+	// a failed read must not have wedged the lock
+	if got := tb.Slice(0, 3); got != "abc" {
+		t.Fatalf("Slice = %q, want %q", got, "abc")
+	}
+}
+
+func TestInsertRejectsInvalidUTF8(t *testing.T) {
+	d := NewDoc()
+	tb := d.Text("body")
+	wantUsageError(t, recovered(func() {
+		d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "ok\xffbad") })
+	}), "valid UTF-8")
+	if tb.Len() != 0 {
+		t.Errorf("the document kept %d runes", tb.Len())
+	}
+}
+
+func TestTextFromAnotherDocPanics(t *testing.T) {
+	a, b := NewDoc(), NewDoc()
+	other := b.Text("body")
+	wantUsageError(t, recovered(func() {
+		a.Transact(nil, func(tx *Tx) { tx.Insert(other, 0, "x") })
+	}), "different Doc")
+	wantUsageError(t, recovered(func() {
+		a.Transact(nil, func(tx *Tx) { tx.Delete(other, 0, 1) })
+	}), "different Doc")
+	wantUsageError(t, recovered(func() {
+		a.Transact(nil, func(tx *Tx) { tx.String(other) })
+	}), "different Doc")
+	if other.Len() != 0 {
+		t.Errorf("the other document changed to %q", other.String())
+	}
+	// both documents are still usable
+	a.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "a") })
+	b.Transact(nil, func(tx *Tx) { tx.Insert(other, 0, "b") })
+	if a.Text("body").String() != "a" || other.String() != "b" {
+		t.Errorf("documents read %q and %q", a.Text("body").String(), other.String())
+	}
+}
+
+func TestTxUsedAfterItsCallbackPanics(t *testing.T) {
+	d := NewDoc()
+	tb := d.Text("body")
+	var escaped *Tx
+	d.Transact(nil, func(tx *Tx) {
+		escaped = tx
+		tx.Insert(tb, 0, "abc")
+	})
+	for _, c := range []struct {
+		name string
+		fn   func()
+	}{
+		{"Insert", func() { escaped.Insert(tb, 0, "x") }},
+		{"Delete", func() { escaped.Delete(tb, 0, 1) }},
+		{"Len", func() { escaped.Len(tb) }},
+		{"String", func() { escaped.String(tb) }},
+		{"Slice", func() { escaped.Slice(tb, 0, 1) }},
+		{"Text", func() { escaped.Text("body") }},
+		{"Origin", func() { escaped.Origin() }},
+		{"Doc", func() { escaped.Doc() }},
+	} {
+		wantUsageError(t, recovered(c.fn), "after its callback")
+		if got := tb.String(); got != "abc" {
+			t.Fatalf("%s changed the text to %q", c.name, got)
+		}
+	}
+}
+
+func TestRootNameMustBeShortValidUTF8(t *testing.T) {
+	d := NewDoc()
+	for _, name := range []string{"", strings.Repeat("n", 256), "bad\xffname"} {
+		wantUsageError(t, recovered(func() { d.Text(name) }), "root name")
+		wantUsageError(t, recovered(func() {
+			d.Transact(nil, func(tx *Tx) { tx.Text(name) })
+		}), "root name")
+	}
+	if got := d.Text(strings.Repeat("n", 255)); got.Name() != strings.Repeat("n", 255) {
+		t.Error("a 255 byte name was rejected")
+	}
+}
+
+func TestPanicInCallbackKeepsWhatItApplied(t *testing.T) {
+	d := NewDoc()
+	tb := d.Text("body")
+	boom := errors.New("editor blew up")
+	if got := recovered(func() {
+		d.Transact(nil, func(tx *Tx) {
+			tx.Insert(tb, 0, "kept")
+			panic(boom)
+		})
+	}); got != boom {
+		t.Fatalf("panicked with %v, want %v", got, boom)
+	}
+	if d.txOpen {
+		t.Error("the transaction is still open")
+	}
+	// the lock was released and the edit before the panic survived
+	if got := tb.String(); got != "kept" {
+		t.Fatalf("text is %q, want %q", got, "kept")
+	}
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 4, "more") })
+	if got := tb.String(); got != "keptmore" {
+		t.Fatalf("text is %q, want %q", got, "keptmore")
+	}
+}

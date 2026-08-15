@@ -64,6 +64,11 @@ type UsageError struct {
 
 func (e *UsageError) Error() string { return "converge: " + e.Msg }
 
+// rangeErr is the value panicked when an index or a length is out of range.
+func rangeErr(t *Text, index, length int) *RangeError {
+	return &RangeError{Text: t.name, Index: index, Length: length, Len: t.runeLen}
+}
+
 // decodeErr locates a decode failure. Wire-level errors are never returned to
 // callers: each blob kind names its own sentinel.
 func decodeErr(offset int, field string, sentinel error) *DecodeError {

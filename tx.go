@@ -29,19 +29,43 @@ func (d *Doc) commit(tx *Tx) {
 	d.mu.Unlock()
 }
 
+// check panics unless t belongs to tx's Doc and tx is still open.
+func (tx *Tx) check(t *Text) {
+	if t.doc != tx.doc {
+		panic(&UsageError{Msg: "Text belongs to a different Doc"})
+	}
+	tx.checkOpen()
+}
+
+func (tx *Tx) checkOpen() {
+	if tx.closed {
+		panic(&UsageError{Msg: "Tx used after its callback returned"})
+	}
+}
+
 // Doc returns the Doc this transaction belongs to.
-func (tx *Tx) Doc() *Doc { return tx.doc }
+func (tx *Tx) Doc() *Doc { tx.checkOpen(); return tx.doc }
 
 // Origin returns the value passed to Transact.
-func (tx *Tx) Origin() any { return tx.origin }
+func (tx *Tx) Origin() any { tx.checkOpen(); return tx.origin }
 
 // Text returns the root Text named name, creating it on first use. This is the
 // only legal way to reach a Text while a transaction is open.
-func (tx *Tx) Text(name string) *Text { return tx.doc.text(name) }
+func (tx *Tx) Text(name string) *Text {
+	tx.checkOpen()
+	return tx.doc.text(name)
+}
 
-// Insert inserts s before the rune at index of t. index may equal the visible
-// length. An empty s is a no-op.
+// Insert inserts s before the rune at index of t, where index may equal the
+// visible length. An empty s is a no-op, an index out of range panics.
 func (tx *Tx) Insert(t *Text, index int, s string) {
+	tx.check(t)
+	if !utf8.ValidString(s) {
+		panic(&UsageError{Msg: "Insert: s is not valid UTF-8"})
+	}
+	if index < 0 || index > t.runeLen {
+		panic(rangeErr(t, index, 0))
+	}
 	if s == "" {
 		return
 	}
@@ -67,10 +91,14 @@ func (tx *Tx) Insert(t *Text, index int, s string) {
 }
 
 // Delete removes length runes starting at index of t. A length of zero or less
-// is a no-op.
+// is a no-op, a range reaching past the end panics.
 func (tx *Tx) Delete(t *Text, index, length int) {
+	tx.check(t)
 	if length <= 0 {
 		return
+	}
+	if index < 0 || index+length > t.runeLen {
+		panic(rangeErr(t, index, length))
 	}
 	s := &tx.doc.store
 	it, off := t.findVisible(index)
@@ -90,11 +118,21 @@ func (tx *Tx) Delete(t *Text, index, length int) {
 }
 
 // Len returns t's visible length in runes, as of this point in the transaction.
-func (tx *Tx) Len(t *Text) int { return t.runeLen }
+func (tx *Tx) Len(t *Text) int {
+	tx.check(t)
+	return t.runeLen
+}
 
 // String returns t's visible text, as of this point in the transaction.
-func (tx *Tx) String(t *Text) string { return t.visible() }
+func (tx *Tx) String(t *Text) string {
+	tx.check(t)
+	return t.visible()
+}
 
-// Slice returns the runes of t in [start, end), as of this point in the
-// transaction.
-func (tx *Tx) Slice(t *Text, start, end int) string { return t.visibleSlice(start, end) }
+// Slice returns t's runes in [start, end) as of this point in the transaction.
+// Panics with *RangeError out of range.
+func (tx *Tx) Slice(t *Text, start, end int) string {
+	tx.check(t)
+	checkSlice(t, start, end)
+	return t.visibleSlice(start, end)
+}

@@ -36,10 +36,11 @@ func (t *Text) String() string {
 	return t.visible()
 }
 
-// Slice returns the runes in [start, end).
+// Slice returns the runes in [start, end). Panics with *RangeError out of range.
 func (t *Text) Slice(start, end int) string {
 	t.doc.mu.Lock()
 	defer t.doc.mu.Unlock()
+	checkSlice(t, start, end)
 	return t.visibleSlice(start, end)
 }
 
@@ -75,9 +76,13 @@ func (t *Text) UTF16Len() int {
 }
 
 // UTF16Index converts a rune index in [0, Len()] to a UTF-16 code-unit offset.
+// Panics with *RangeError out of range.
 func (t *Text) UTF16Index(runeIndex int) int {
 	t.doc.mu.Lock()
 	defer t.doc.mu.Unlock()
+	if runeIndex < 0 || runeIndex > t.runeLen {
+		panic(rangeErr(t, runeIndex, 0))
+	}
 	return t.utf16Index(runeIndex)
 }
 
@@ -207,6 +212,12 @@ func (t *Text) findInsertPos(index int) (left, right *item) {
 	}
 	// it now ends at visible rune index-1, and its right may be a tombstone
 	return it, it.right
+}
+
+func checkSlice(t *Text, start, end int) {
+	if start < 0 || end < start || end > t.runeLen {
+		panic(rangeErr(t, start, end-start))
+	}
 }
 
 func checkTextName(name string) {
