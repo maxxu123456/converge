@@ -5,9 +5,10 @@ import "unicode/utf8"
 // Tx is the sole mutation surface, and the only legal way to read a Text while
 // a transaction is open. It is valid only inside the Transact callback.
 type Tx struct {
-	doc    *Doc
-	origin any
-	closed bool // set once the callback has returned
+	doc     *Doc
+	origin  any
+	closed  bool      // set once the callback has returned
+	deleted deleteSet // runes this transaction turned into tombstones
 }
 
 // begin opens the document's single reusable transaction. The caller holds the lock.
@@ -15,13 +16,14 @@ func (d *Doc) begin(origin any) *Tx {
 	if d.txOpen {
 		panic("converge: transaction already open")
 	}
-	d.tx = Tx{doc: d, origin: origin}
+	d.tx = Tx{doc: d, origin: origin, deleted: deleteSet{}}
 	d.txOpen = true
 	return &d.tx
 }
 
 // commit closes the transaction and releases the document lock.
 func (d *Doc) commit(tx *Tx) {
+	tx.deleted.normalize()
 	tx.closed = true
 	d.txOpen = false
 	d.mu.Unlock()
@@ -62,6 +64,29 @@ func (tx *Tx) Insert(t *Text, index int, s string) {
 		it.rightOrigin = right.id // may name a tombstone, which is what keeps the intention
 	}
 	integrate(tx, it)
+}
+
+// Delete removes length runes starting at index of t. A length of zero or less
+// is a no-op.
+func (tx *Tx) Delete(t *Text, index, length int) {
+	if length <= 0 {
+		return
+	}
+	s := &tx.doc.store
+	it, off := t.findVisible(index)
+	if off > 0 {
+		it = s.splitAt(it, uint32(off))
+	}
+	for remaining := length; remaining > 0 && it != nil; it = it.right {
+		if it.deleted {
+			continue // a tombstone consumes none of the length
+		}
+		if int(it.runeLen) > remaining {
+			s.splitAt(it, uint32(remaining))
+		}
+		remaining -= int(it.runeLen)
+		deleteItem(tx, it)
+	}
 }
 
 // Len returns t's visible length in runes, as of this point in the transaction.

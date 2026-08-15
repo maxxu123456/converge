@@ -1,0 +1,83 @@
+package converge
+
+import (
+	"cmp"
+	"slices"
+)
+
+// idRange covers the clocks [clock, clock+length) of one client.
+type idRange struct {
+	clock  uint64
+	length uint64
+}
+
+func (r idRange) end() uint64 { return r.clock + r.length }
+
+// deleteSet is the tombstoned clock ranges of each client. Canonical form is
+// sorted, non-overlapping and non-adjacent, which normalize restores.
+type deleteSet map[ClientID][]idRange
+
+func (ds deleteSet) add(c ClientID, clock, length uint64) {
+	if length == 0 {
+		return
+	}
+	rs := ds[c]
+	// deletes usually walk left to right, so the common case extends the last range
+	if n := len(rs); n > 0 && rs[n-1].end() == clock {
+		rs[n-1].length += length
+		return
+	}
+	ds[c] = append(rs, idRange{clock, length})
+}
+
+// normalize sorts each client's ranges and coalesces the ones that overlap or
+// touch, so the set is a function of the state and not of arrival order.
+func (ds deleteSet) normalize() {
+	for c, rs := range ds {
+		if len(rs) == 0 {
+			delete(ds, c)
+			continue
+		}
+		slices.SortFunc(rs, func(a, b idRange) int { return cmp.Compare(a.clock, b.clock) })
+		out := rs[:1]
+		for _, r := range rs[1:] {
+			last := &out[len(out)-1]
+			if r.clock <= last.end() {
+				if e := r.end(); e > last.end() {
+					last.length = e - last.clock
+				}
+				continue
+			}
+			out = append(out, r)
+		}
+		ds[c] = out
+	}
+}
+
+// covers reports whether [id.Clock, id.Clock+n) lies inside a single range.
+func (ds deleteSet) covers(id ID, n uint32) bool {
+	end := id.Clock + uint64(n)
+	for _, r := range ds[id.Client] {
+		if r.clock <= id.Clock && end <= r.end() {
+			return true
+		}
+	}
+	return false
+}
+
+// union folds other into ds and leaves ds canonical.
+func (ds deleteSet) union(other deleteSet) {
+	for c, rs := range other {
+		ds[c] = append(ds[c], rs...)
+	}
+	ds.normalize()
+}
+
+func (ds deleteSet) empty() bool {
+	for _, rs := range ds {
+		if len(rs) > 0 {
+			return false
+		}
+	}
+	return true
+}

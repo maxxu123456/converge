@@ -23,6 +23,20 @@ func (it *item) lastID() ID {
 
 func (it *item) endClock() uint64 { return it.id.Clock + uint64(it.runeLen) }
 
+// deleteItem tombstones it. This is the only place deleted is ever set, and it
+// returns early on a tombstone, so the accounting cannot drift.
+func deleteItem(tx *Tx, it *item) {
+	if it.deleted {
+		return
+	}
+	it.deleted = true
+	t := it.parent
+	t.runeLen -= int(it.runeLen)
+	t.byteLen -= len(it.content)
+	t.u16Len -= int(it.u16Len)
+	tx.deleted.add(it.id.Client, it.id.Clock, uint64(it.runeLen))
+}
+
 // utf8ByteOffset returns the byte index of rune off in s. off is always within
 // s, so the result is always a code point boundary.
 func utf8ByteOffset(s string, off uint32) int {
