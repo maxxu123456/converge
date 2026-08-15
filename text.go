@@ -1,6 +1,7 @@
 package converge
 
 import (
+	"io"
 	"strings"
 	"unicode/utf8"
 )
@@ -18,6 +19,75 @@ type Text struct {
 
 // Name returns the root name this Text was registered under.
 func (t *Text) Name() string { return t.name }
+
+// Len returns the visible length in runes. Do not call it from inside a
+// Transact callback, use Tx.Len.
+func (t *Text) Len() int {
+	t.doc.mu.Lock()
+	defer t.doc.mu.Unlock()
+	return t.runeLen
+}
+
+// String returns the visible text and satisfies fmt.Stringer. Do not call it
+// from inside a Transact callback, use Tx.String.
+func (t *Text) String() string {
+	t.doc.mu.Lock()
+	defer t.doc.mu.Unlock()
+	return t.visible()
+}
+
+// Slice returns the runes in [start, end).
+func (t *Text) Slice(start, end int) string {
+	t.doc.mu.Lock()
+	defer t.doc.mu.Unlock()
+	return t.visibleSlice(start, end)
+}
+
+// WriteTo writes the visible text to w and satisfies io.WriterTo. It never
+// holds the document lock while writing.
+func (t *Text) WriteTo(w io.Writer) (int64, error) {
+	t.doc.mu.Lock()
+	parts := make([]string, 0, 16)
+	for it := t.start; it != nil; it = it.right {
+		if !it.deleted {
+			parts = append(parts, it.content)
+		}
+	}
+	t.doc.mu.Unlock()
+	// content is immutable, so the snapshot outlives the lock
+	var n int64
+	for _, p := range parts {
+		m, err := io.WriteString(w, p)
+		n += int64(m)
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+// UTF16Len returns the visible length in UTF-16 code units, which is what a
+// browser editor counts.
+func (t *Text) UTF16Len() int {
+	t.doc.mu.Lock()
+	defer t.doc.mu.Unlock()
+	return t.u16Len
+}
+
+// UTF16Index converts a rune index in [0, Len()] to a UTF-16 code-unit offset.
+func (t *Text) UTF16Index(runeIndex int) int {
+	t.doc.mu.Lock()
+	defer t.doc.mu.Unlock()
+	return t.utf16Index(runeIndex)
+}
+
+// RuneIndex converts a UTF-16 code-unit offset to a rune index. An offset
+// inside a surrogate pair rounds down to that pair, one past the end clamps.
+func (t *Text) RuneIndex(utf16Index int) int {
+	t.doc.mu.Lock()
+	defer t.doc.mu.Unlock()
+	return t.runeIndex(utf16Index)
+}
 
 // visible returns t's visible content. The caller holds the document lock.
 func (t *Text) visible() string {
@@ -54,6 +124,59 @@ func (t *Text) visibleSlice(start, end int) string {
 		n += l
 	}
 	return b.String()
+}
+
+// utf16Index returns the UTF-16 offset of visible rune index. The caller holds
+// the lock.
+func (t *Text) utf16Index(index int) int {
+	r, u := 0, 0
+	for it := t.start; it != nil && r < index; it = it.right {
+		if it.deleted {
+			continue
+		}
+		l := int(it.runeLen)
+		if r+l <= index {
+			r += l
+			u += int(it.u16Len)
+			continue
+		}
+		off := utf8ByteOffset(it.content, uint32(index-r))
+		return u + int(utf16LenOf(it.content[:off]))
+	}
+	return u
+}
+
+// runeIndex returns the rune index of a UTF-16 offset. The caller holds the lock.
+func (t *Text) runeIndex(u16 int) int {
+	if u16 <= 0 {
+		return 0
+	}
+	if u16 >= t.u16Len {
+		return t.runeLen
+	}
+	r, u := 0, 0
+	for it := t.start; it != nil; it = it.right {
+		if it.deleted {
+			continue
+		}
+		if u+int(it.u16Len) <= u16 {
+			r += int(it.runeLen)
+			u += int(it.u16Len)
+			continue
+		}
+		for _, c := range it.content {
+			w := 1
+			if c > 0xFFFF {
+				w = 2
+			}
+			if u+w > u16 {
+				return r // an offset inside a surrogate pair rounds down
+			}
+			r++
+			u += w
+		}
+	}
+	return r
 }
 
 // findVisible returns the item holding visible rune index and the rune offset
