@@ -1,5 +1,7 @@
 package converge
 
+import "unicode/utf8"
+
 // Tx is the sole mutation surface, and the only legal way to read a Text while
 // a transaction is open. It is valid only inside the Transact callback.
 type Tx struct {
@@ -34,6 +36,33 @@ func (tx *Tx) Origin() any { return tx.origin }
 // Text returns the root Text named name, creating it on first use. This is the
 // only legal way to reach a Text while a transaction is open.
 func (tx *Tx) Text(name string) *Text { return tx.doc.text(name) }
+
+// Insert inserts s before the rune at index of t. index may equal the visible
+// length. An empty s is a no-op.
+func (tx *Tx) Insert(t *Text, index int, s string) {
+	if s == "" {
+		return
+	}
+	d := tx.doc
+	left, right := t.findInsertPos(index)
+	it := &item{
+		// the clock comes from the store, never from a counter on Doc
+		id:      ID{d.clientID, d.store.stateOf(d.clientID)},
+		left:    left,
+		right:   right,
+		parent:  t,
+		content: s,
+		runeLen: uint32(utf8.RuneCountInString(s)),
+		u16Len:  utf16LenOf(s),
+	}
+	if left != nil {
+		it.origin = left.lastID()
+	}
+	if right != nil {
+		it.rightOrigin = right.id // may name a tombstone, which is what keeps the intention
+	}
+	integrate(tx, it)
+}
 
 // Len returns t's visible length in runes, as of this point in the transaction.
 func (tx *Tx) Len(t *Text) int { return t.runeLen }
