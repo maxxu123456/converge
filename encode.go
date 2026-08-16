@@ -2,6 +2,7 @@ package converge
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/maxxu123456/converge/internal/wire"
 )
@@ -54,16 +55,65 @@ func writeHeader(w *wire.Writer, kind byte) {
 // re-encoding a decoded update reproduces the bytes it came from. Every
 // client's slice must already be ordered by clock.
 func encodeStructs(structs map[ClientID][]decoded, ds deleteSet) Update {
+	return encodeUpdate(structs, ds, false)
+}
+
+// encodeCanonical folds each client's structs before emitting, so two replicas
+// holding the same state produce the same bytes whatever their split history.
+func encodeCanonical(structs map[ClientID][]decoded, ds deleteSet) Update {
+	return encodeUpdate(structs, ds, true)
+}
+
+func encodeUpdate(structs map[ClientID][]decoded, ds deleteSet, fold bool) Update {
 	w := &wire.Writer{B: make([]byte, 0, 64)}
 	writeHeader(w, kindUpdate)
 	clients := sortedClients(structs)
 	w.Uvarint(uint64(len(clients)))
 	for _, c := range clients {
+		ss := structs[c]
+		if fold {
+			ss = foldRuns(ss)
+		}
 		w.Uvarint(uint64(c))
-		writeRuns(w, structs[c])
+		writeRuns(w, ss)
 	}
 	writeDeleteSet(w, ds)
 	return w.B
+}
+
+// foldRuns merges every maximal chain of clock-contiguous structs that splitAt
+// would regenerate, so in-memory block boundaries never reach the wire.
+func foldRuns(ss []decoded) []decoded {
+	out := make([]decoded, 0, len(ss))
+	for i := 0; i < len(ss); {
+		s, nb, j := ss[i], len(ss[i].content), i+1
+		for j < len(ss) && foldsInto(s, ss[j]) {
+			s.runeLen += ss[j].runeLen
+			s.u16Len += ss[j].u16Len
+			nb += len(ss[j].content)
+			j++
+		}
+		if j > i+1 {
+			var b strings.Builder
+			b.Grow(nb)
+			for _, f := range ss[i:j] {
+				b.WriteString(f.content)
+			}
+			s.content = b.String()
+		}
+		out = append(out, s)
+		i = j
+	}
+	return out
+}
+
+// foldsInto reports whether next continues s exactly as a split would have cut
+// it. List adjacency and deleted-ness are deliberately not part of the test.
+func foldsInto(s, next decoded) bool {
+	return next.clock == s.endClock() &&
+		next.origin == ID{Client: s.client, Clock: next.clock - 1} &&
+		next.rightOrigin == s.rightOrigin &&
+		next.parentName == ""
 }
 
 // sortedClients returns the clients holding at least one struct, ascending.
