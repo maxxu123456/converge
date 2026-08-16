@@ -46,9 +46,43 @@ func TestIDString(t *testing.T) {
 	}
 }
 
+// checkLinks asserts the list is doubly linked and agrees with the store. No
+// read accessor walks left, so nothing else would notice a broken back link.
+func checkLinks(t *testing.T, tb *Text) {
+	t.Helper()
+	var prev *item
+	listed := 0
+	for it := tb.start; it != nil; it = it.right {
+		if it.left != prev {
+			t.Fatalf("item %v does not point back at its predecessor", it.id)
+		}
+		if it.parent != tb {
+			t.Fatalf("item %v hangs off another Text", it.id)
+		}
+		if got := tb.doc.store.get(it.id); got != it {
+			t.Fatalf("the store answers %v with a different item", it.id)
+		}
+		prev = it
+		listed++
+	}
+	stored := 0
+	for _, cb := range tb.doc.store.clients {
+		for _, it := range cb.blocks {
+			if it.parent == tb {
+				stored++
+			}
+		}
+	}
+	if listed != stored {
+		t.Fatalf("the list holds %d items and the store %d", listed, stored)
+	}
+	checkContiguous(t, &tb.doc.store)
+}
+
 // checkAgainstModel asserts every read accessor agrees with a plain []rune.
 func checkAgainstModel(t *testing.T, tb *Text, model []rune) {
 	t.Helper()
+	checkLinks(t, tb)
 	want := string(model)
 	if got := tb.String(); got != want {
 		t.Fatalf("String() = %q, want %q", got, want)
@@ -449,5 +483,65 @@ func TestPanicInCallbackKeepsWhatItApplied(t *testing.T) {
 	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 4, "more") })
 	if got := tb.String(); got != "keptmore" {
 		t.Fatalf("text is %q, want %q", got, "keptmore")
+	}
+}
+
+func TestInsertRecordsTheNeighboursItWasBornWith(t *testing.T) {
+	d := NewDocWith(Options{ClientID: 9})
+	tb := d.Text("body")
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "abc") })
+	if first := tb.start; !first.origin.IsZero() || !first.rightOrigin.IsZero() {
+		t.Fatalf("the first item was born with origins %v and %v", first.origin, first.rightOrigin)
+	}
+
+	// appending after a run anchors on the run's LAST rune, not on its first
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 3, "Z") })
+	z := d.store.get(ID{9, 3})
+	if want := (ID{9, 2}); z.origin != want {
+		t.Errorf("origin %v, want %v", z.origin, want)
+	}
+	if !z.rightOrigin.IsZero() {
+		t.Errorf("rightOrigin %v, want none", z.rightOrigin)
+	}
+	checkAgainstModel(t, tb, []rune("abcZ"))
+
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 1, "X") })
+	x := d.store.get(ID{9, 4})
+	if want := (ID{9, 0}); x.origin != want {
+		t.Errorf("origin %v, want %v", x.origin, want)
+	}
+	if want := (ID{9, 1}); x.rightOrigin != want {
+		t.Errorf("rightOrigin %v, want %v", x.rightOrigin, want)
+	}
+	checkAgainstModel(t, tb, []rune("aXbcZ"))
+
+	// deleting the right neighbour must not change what the next insert anchors to
+	d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 2, 1) })
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 2, "Y") })
+	y := d.store.get(ID{9, 5})
+	if want := (ID{9, 4}); y.origin != want {
+		t.Errorf("origin %v, want %v", y.origin, want)
+	}
+	if want := (ID{9, 1}); y.rightOrigin != want {
+		t.Errorf("rightOrigin %v, want the tombstone %v", y.rightOrigin, want)
+	}
+	checkAgainstModel(t, tb, []rune("aXYcZ"))
+}
+
+func TestRepeatedTombstoneChangesNothing(t *testing.T) {
+	d := NewDocWith(Options{ClientID: 5})
+	tb := d.Text("body")
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "abc") })
+	d.Transact(nil, func(tx *Tx) {
+		it := tb.start
+		deleteItem(tx, it)
+		deleteItem(tx, it)
+	})
+	if tb.Len() != 0 || tb.byteLen != 0 || tb.UTF16Len() != 0 {
+		t.Fatalf("counters read %d runes, %d bytes, %d units",
+			tb.Len(), tb.byteLen, tb.UTF16Len())
+	}
+	if got := d.tx.deleted[5]; len(got) != 1 || got[0] != (idRange{0, 3}) {
+		t.Errorf("transitions %v, want one range covering three clocks", got)
 	}
 }
