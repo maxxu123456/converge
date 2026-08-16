@@ -108,12 +108,12 @@ func TestInsertAndDeleteMatchARuneModel(t *testing.T) {
 	insert(5, " world")
 	insert(5, ",")
 	insert(len(model), "!")
-	insert(7, "世界")                   // CJK, three bytes per rune
+	insert(7, "\u4e16\u754c")         // CJK, three bytes per rune
 	insert(0, "\U0001F600\U0001F389") // astral, two UTF-16 units per rune
 	del(1, 1)                         // a whole astral rune, not a UTF-16 unit
 	del(0, 1)
 	del(3, 4)
-	insert(len(model)/2, "́mid")
+	insert(len(model)/2, "\u0301mid")
 	del(len(model)-1, 1)
 	del(0, len(model))
 	insert(0, "again")
@@ -124,10 +124,10 @@ func TestReadsIgnoreBlockBoundaries(t *testing.T) {
 	d := NewDoc()
 	tb := d.Text("body")
 	d.Transact(nil, func(tx *Tx) {
-		tx.Insert(tb, 0, "a\U0001F600b世c")
+		tx.Insert(tb, 0, "a\U0001F600b\u4e16c")
 		tx.Delete(tb, 2, 1)
 	})
-	model := []rune("a\U0001F600世c")
+	model := []rune("a\U0001F600\u4e16c")
 	checkAgainstModel(t, tb, model)
 
 	forceSplit(&d.store)
@@ -135,7 +135,7 @@ func TestReadsIgnoreBlockBoundaries(t *testing.T) {
 
 	// and an edit on the shattered list still lands where the model says
 	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 2, "z") })
-	model = []rune("a\U0001F600z世c")
+	model = []rune("a\U0001F600z\u4e16c")
 	checkAgainstModel(t, tb, model)
 }
 
