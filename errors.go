@@ -29,7 +29,7 @@ var ErrPendingOverflow = errors.New("converge: causally-blocked buffer full")
 // DecodeError locates a decode failure. Err is one of the sentinels above.
 type DecodeError struct {
 	Offset int    // byte offset into the blob where the failure was detected
-	Field  string // e.g. "struct.contentLen", "deleteSet.gap"
+	Field  string // e.g. "struct.content", "deleteSet.gap"
 	Err    error
 }
 
