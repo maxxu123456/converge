@@ -51,9 +51,8 @@ func writeHeader(w *wire.Writer, kind byte) {
 	w.Byte(blobVersion)
 }
 
-// encodeStructs emits structs exactly as given, with no folding, so that
-// re-encoding a decoded update reproduces the bytes it came from. Every
-// client's slice must already be ordered by clock.
+// encodeStructs emits structs as given, unfolded, so re-encoding a decoded
+// update reproduces its bytes. Each client's slice must be clock ordered.
 func encodeStructs(structs map[ClientID][]decoded, ds deleteSet) Update {
 	return encodeUpdate(structs, ds, false)
 }

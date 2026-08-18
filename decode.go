@@ -287,10 +287,8 @@ func readRanges(r *wire.Reader) ([]idRange, error) {
 	return rs, nil
 }
 
-// validateUpdate rejects a struct set that no arrival order could integrate: an
-// origin naming its own client's future, overlapping same-client clock ranges,
-// or a cycle in the update's own dependency graph. It is a check and nothing
-// more, and never decides the order anything is integrated in.
+// validateUpdate rejects what no arrival order could integrate: a self-future
+// origin, overlapping same-client ranges, or a cycle. It orders nothing.
 func validateUpdate(structs map[ClientID][]decoded) error {
 	clients := make([]ClientID, 0, len(structs))
 	for c := range structs {
