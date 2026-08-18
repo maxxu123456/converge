@@ -61,6 +61,24 @@ func (d *Doc) text(name string) *Text {
 	return t
 }
 
+// StateVector returns what this replica has seen: per client, the next clock
+// it expects. The result is a value safe to hold and to send.
+func (d *Doc) StateVector() StateVector {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return StateVector{m: d.store.stateVector()}
+}
+
+// EncodeStateAsUpdate returns everything this replica holds that the holder of
+// since does not. The zero StateVector means everything.
+func (d *Doc) EncodeStateAsUpdate(since StateVector) Update {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// the delete set goes out whole whatever since says: tombstoning advances
+	// no clock, so a filtered one resurrects deleted text on the receiver
+	return encodeCanonical(structsSince(&d.store, since.m), deleteSetFromStore(&d.store))
+}
+
 // Transact runs fn as one atomic change. fn must not call any method on the Doc
 // or on a Text: the document lock is held for the whole callback.
 func (d *Doc) Transact(origin any, fn func(tx *Tx)) {

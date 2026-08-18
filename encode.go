@@ -51,6 +51,69 @@ func writeHeader(w *wire.Writer, kind byte) {
 	w.Byte(blobVersion)
 }
 
+// structsSince returns every client's runs from the clock since names onward,
+// clock ordered. The run straddling the boundary is sliced, not dropped.
+func structsSince(st *structStore, since map[ClientID]uint64) map[ClientID][]decoded {
+	out := make(map[ClientID][]decoded, len(st.clients))
+	for c, cb := range st.clients {
+		from := since[c]
+		if from >= cb.next {
+			continue
+		}
+		i, _ := cb.find(from)
+		ss := make([]decoded, 0, len(cb.blocks)-i)
+		for _, it := range cb.blocks[i:] {
+			ss = append(ss, sliceStruct(it, from))
+		}
+		out[c] = ss
+	}
+	return out
+}
+
+// sliceStruct describes it from fromClock on. A fromClock inside the run cuts
+// it by splitAt's rule, so the receiver rebuilds the same fields.
+func sliceStruct(it *item, fromClock uint64) decoded {
+	s := decoded{
+		client:      it.id.Client,
+		clock:       it.id.Clock,
+		origin:      it.origin,
+		rightOrigin: it.rightOrigin,
+		content:     it.content,
+		runeLen:     it.runeLen,
+		u16Len:      it.u16Len,
+	}
+	if s.origin.IsZero() && s.rightOrigin.IsZero() {
+		s.parentName = it.parent.name
+	}
+	if fromClock <= s.clock {
+		return s
+	}
+	off := uint32(fromClock - s.clock)
+	b := utf8ByteOffset(s.content, off)
+	s.clock = fromClock
+	s.origin = ID{Client: s.client, Clock: fromClock - 1}
+	s.parentName = "" // the cut half inherits its parent from the half before it
+	s.content = s.content[b:]
+	s.runeLen -= off
+	s.u16Len -= utf16LenOf(it.content[:b])
+	return s
+}
+
+// deleteSetFromStore rebuilds the complete delete set by walking the store.
+// item.deleted is the only source of truth, so nothing can drift out of sync.
+func deleteSetFromStore(st *structStore) deleteSet {
+	ds := deleteSet{}
+	for c, cb := range st.clients {
+		for _, it := range cb.blocks {
+			if it.deleted {
+				ds.add(c, it.id.Clock, uint64(it.runeLen))
+			}
+		}
+	}
+	ds.normalize()
+	return ds
+}
+
 // encodeStructs emits structs as given, unfolded, so re-encoding a decoded
 // update reproduces its bytes. Each client's slice must be clock ordered.
 func encodeStructs(structs map[ClientID][]decoded, ds deleteSet) Update {
