@@ -1,6 +1,8 @@
 package converge
 
 import (
+	"slices"
+	"sort"
 	"unicode/utf8"
 
 	"github.com/maxxu123456/converge/internal/wire"
@@ -283,4 +285,101 @@ func readRanges(r *wire.Reader) ([]idRange, error) {
 		prevEnd = clock + length
 	}
 	return rs, nil
+}
+
+// validateUpdate rejects a struct set that no arrival order could integrate: an
+// origin naming its own client's future, overlapping same-client clock ranges,
+// or a cycle in the update's own dependency graph. It is a check and nothing
+// more, and never decides the order anything is integrated in.
+func validateUpdate(structs map[ClientID][]decoded) error {
+	clients := make([]ClientID, 0, len(structs))
+	for c := range structs {
+		clients = append(clients, c)
+	}
+	// node numbers must not depend on map order
+	slices.Sort(clients)
+	base := make(map[ClientID]int, len(structs))
+	n := 0
+	for _, c := range clients {
+		base[c] = n
+		n += len(structs[c])
+	}
+
+	for _, c := range clients {
+		var prevEnd uint64
+		for i, s := range structs[c] {
+			// the decoder catches these as well, so that validateUpdate still
+			// stands alone on a struct set that never came off the wire
+			if selfFuture(s, s.origin) {
+				return badUpdate(0, "struct.origin")
+			}
+			if selfFuture(s, s.rightOrigin) {
+				return badUpdate(0, "struct.rightOrigin")
+			}
+			if i > 0 && s.clock < prevEnd {
+				return badUpdate(0, "struct.clock")
+			}
+			prevEnd = s.endClock()
+		}
+	}
+
+	edges := make([][]int, n)
+	indeg := make([]int, n)
+	for _, c := range clients {
+		for i, s := range structs[c] {
+			v := base[c] + i
+			// nothing can go in before its own client's predecessor
+			if i > 0 {
+				edges[v-1] = append(edges[v-1], v)
+				indeg[v]++
+			}
+			for _, o := range [2]ID{s.origin, s.rightOrigin} {
+				if o.IsZero() {
+					continue
+				}
+				if j := structAt(structs[o.Client], o.Clock); j >= 0 {
+					u := base[o.Client] + j
+					edges[u] = append(edges[u], v)
+					indeg[v]++
+				}
+			}
+		}
+	}
+
+	queue := make([]int, 0, n)
+	for v := range indeg {
+		if indeg[v] == 0 {
+			queue = append(queue, v)
+		}
+	}
+	done := 0
+	for len(queue) > 0 {
+		v := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		done++
+		for _, w := range edges[v] {
+			indeg[w]--
+			if indeg[w] == 0 {
+				queue = append(queue, w)
+			}
+		}
+	}
+	if done != n {
+		return badUpdate(0, "struct.originCycle")
+	}
+	return nil
+}
+
+func selfFuture(s decoded, o ID) bool {
+	return !o.IsZero() && o.Client == s.client && o.Clock >= s.clock
+}
+
+// structAt returns the index of the struct covering clock, or -1. ss must be
+// ordered by clock.
+func structAt(ss []decoded, clock uint64) int {
+	i := sort.Search(len(ss), func(i int) bool { return ss[i].endClock() > clock })
+	if i == len(ss) || ss[i].clock > clock {
+		return -1
+	}
+	return i
 }

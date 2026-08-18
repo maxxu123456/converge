@@ -287,3 +287,114 @@ func TestHostileCountsAllocateAlmostNothing(t *testing.T) {
 		}
 	}
 }
+
+// str builds a struct for the validation tests, which need shapes the decoder
+// would never hand over.
+func str(c ClientID, clock uint64, origin, rightOrigin ID, runes uint32) decoded {
+	s := decoded{
+		client:      c,
+		clock:       clock,
+		origin:      origin,
+		rightOrigin: rightOrigin,
+		content:     strings.Repeat("x", int(runes)),
+		runeLen:     runes,
+		u16Len:      runes,
+	}
+	if origin.IsZero() && rightOrigin.IsZero() {
+		s.parentName = "body"
+	}
+	return s
+}
+
+func TestValidateUpdateAcceptsTheDecodedTable(t *testing.T) {
+	for _, c := range acceptedUpdates {
+		structs, _, err := decodeUpdate(c.in)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if err := validateUpdate(structs); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+}
+
+func TestValidateUpdateAcceptsAChain(t *testing.T) {
+	var none ID
+	structs := map[ClientID][]decoded{
+		1: {
+			str(1, 0, none, none, 1),
+			str(1, 1, ID{1, 0}, none, 1),
+		},
+		2: {str(2, 0, ID{1, 1}, none, 1)},
+	}
+	if err := validateUpdate(structs); err != nil {
+		t.Fatalf("a causally ordered update was rejected: %v", err)
+	}
+}
+
+func TestValidateUpdateRejects(t *testing.T) {
+	var none ID
+	cases := []struct {
+		name  string
+		field string
+		in    map[ClientID][]decoded
+	}{
+		{"origin names its own future", "struct.origin", map[ClientID][]decoded{
+			1: {str(1, 3, ID{1, 9}, none, 1)},
+		}},
+		{"origin names its own clock", "struct.origin", map[ClientID][]decoded{
+			1: {str(1, 3, ID{1, 4}, none, 1)},
+		}},
+		{"right origin names its own future", "struct.rightOrigin", map[ClientID][]decoded{
+			1: {str(1, 3, none, ID{1, 9}, 1)},
+		}},
+		{"overlapping same client ranges", "struct.clock", map[ClientID][]decoded{
+			1: {str(1, 0, none, none, 4), str(1, 2, ID{2, 0}, none, 2)},
+		}},
+		{"two structs naming each other", "struct.originCycle", map[ClientID][]decoded{
+			1: {str(1, 0, ID{2, 0}, none, 1)},
+			2: {str(2, 0, ID{1, 0}, none, 1)},
+		}},
+		{"a cycle through a same client predecessor", "struct.originCycle", map[ClientID][]decoded{
+			1: {str(1, 0, ID{2, 0}, none, 1), str(1, 1, none, none, 1)},
+			2: {str(2, 0, ID{1, 1}, none, 1)},
+		}},
+		{"a cycle through right origins", "struct.originCycle", map[ClientID][]decoded{
+			1: {str(1, 0, none, ID{2, 0}, 1)},
+			2: {str(2, 0, none, ID{1, 0}, 1)},
+		}},
+	}
+	for _, c := range cases {
+		err := validateUpdate(c.in)
+		if !errors.Is(err, ErrMalformedUpdate) {
+			t.Errorf("%s: got %v, want ErrMalformedUpdate", c.name, err)
+			continue
+		}
+		var de *DecodeError
+		if !errors.As(err, &de) {
+			t.Errorf("%s: error is not a *DecodeError: %v", c.name, err)
+			continue
+		}
+		if de.Field != c.field {
+			t.Errorf("%s: field %q, want %q", c.name, de.Field, c.field)
+		}
+	}
+}
+
+// The predecessor edge is what stops a general topological order from emitting
+// two same-client structs out of clock order.
+func TestValidateUpdateNeedsThePredecessorEdge(t *testing.T) {
+	var none ID
+	structs := map[ClientID][]decoded{
+		1: {str(1, 0, ID{2, 0}, none, 1), str(1, 1, none, none, 1)},
+		2: {str(2, 0, ID{1, 1}, none, 1)},
+	}
+	if err := validateUpdate(structs); err == nil {
+		t.Fatal("the cycle only closes through client 1's predecessor edge")
+	}
+	// the same shape without the back reference is a legal partial order
+	structs[2] = []decoded{str(2, 0, none, none, 1)}
+	if err := validateUpdate(structs); err != nil {
+		t.Fatalf("rejected an acyclic update: %v", err)
+	}
+}
