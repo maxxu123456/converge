@@ -203,3 +203,14 @@ func TestEmptyUpdateIsFiveBytes(t *testing.T) {
 		t.Fatalf("got %x, want %x", got, want)
 	}
 }
+
+func TestFoldSumsTheRuneAndCodeUnitCounts(t *testing.T) {
+	s := decoded{client: 42, parentName: "body", content: "a\U0001d11eb", runeLen: 3, u16Len: 4}
+	got := foldRuns(splitRun(s))
+	if len(got) != 1 {
+		t.Fatalf("folded to %d structs, want 1", len(got))
+	}
+	if got[0] != s {
+		t.Errorf("folded to %+v, want %+v", got[0], s)
+	}
+}

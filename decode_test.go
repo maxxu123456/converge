@@ -398,3 +398,33 @@ func TestValidateUpdateNeedsThePredecessorEdge(t *testing.T) {
 		t.Fatalf("rejected an acyclic update: %v", err)
 	}
 }
+
+// A struct's clock length is its content's rune count and never reaches the
+// wire. Counting bytes instead puts every later struct at the wrong id.
+func TestImplicitClocksCountRunes(t *testing.T) {
+	b := []byte{
+		0xcf, 0x01, 0x01,
+		0x01,
+		0x2a, 0x01, 0x00, 0x02, // client 42, one run at clock 0, two structs
+		0x04, 0x01, 'b', 0x04, 0xf0, 0x9d, 0x84, 0x9e, // one four-byte rune
+		0x01, 0x2a, 0x00, 0x01, 'x', // origin {42,0}, content "x"
+		0x00,
+	}
+	structs, ds, err := decodeUpdate(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := structs[42]
+	if len(got) != 2 {
+		t.Fatalf("decoded %d structs, want 2", len(got))
+	}
+	if got[0].runeLen != 1 || got[0].u16Len != 2 {
+		t.Errorf("astral struct: runeLen %d, u16Len %d, want 1 and 2", got[0].runeLen, got[0].u16Len)
+	}
+	if got[1].clock != 1 {
+		t.Errorf("the second struct landed at clock %d, want 1", got[1].clock)
+	}
+	if !bytes.Equal(encodeStructs(structs, ds), b) {
+		t.Error("re-encoding did not reproduce the input")
+	}
+}
