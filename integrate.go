@@ -49,6 +49,61 @@ func materialize(tx *Tx, s decoded, offset uint32) (*item, error) {
 	return it, nil
 }
 
+// drive integrates every struct whose dependencies this replica already holds,
+// cycling per-client cursors until a whole round makes no progress.
+func drive(tx *Tx, structs map[ClientID][]decoded) (rejected bool) {
+	st := &tx.doc.store
+	order := sortedClients(structs)
+	cursor := make(map[ClientID]int, len(structs))
+	for {
+		progress := false
+		for _, c := range order {
+			ss, i := structs[c], cursor[c]
+			// strictly by clock, so a struct never lands before its own predecessor
+			for i < len(ss) {
+				s := ss[i]
+				state := st.stateOf(c)
+				if s.endClock() <= state { // a duplicate delivery, already held
+					i++
+					progress = true
+					continue
+				}
+				if s.clock > state { // a gap in this client's own log
+					break
+				}
+				if !originsPresent(st, s) {
+					break
+				}
+				it, err := materialize(tx, s, uint32(state-s.clock))
+				if err != nil {
+					// the rest of c is one clock chain that can never complete
+					i, rejected = len(ss), true
+					break
+				}
+				integrate(tx, it)
+				i++
+				progress = true
+			}
+			cursor[c] = i
+		}
+		if !progress {
+			return rejected
+		}
+	}
+}
+
+// originsPresent reports whether both of s's anchors are already in the store.
+func originsPresent(st *structStore, s decoded) bool {
+	if !s.origin.IsZero() && st.stateOf(s.origin.Client) <= s.origin.Clock {
+		return false
+	}
+	if !s.rightOrigin.IsZero() && st.stateOf(s.rightOrigin.Client) <= s.rightOrigin.Clock {
+		return false
+	}
+	// a same-client origin needs no guard: it is below s.clock, which is held
+	return true
+}
+
 // integrate splices it into the list between it.left and it.right and updates
 // its parent's visible counters.
 func integrate(tx *Tx, it *item) {
