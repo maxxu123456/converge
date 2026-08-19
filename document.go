@@ -13,6 +13,14 @@ type Doc struct {
 
 	tx     Tx // the single reusable transaction value
 	txOpen bool
+
+	updObs    []*updateObserver
+	nextObsID uint64
+}
+
+type updateObserver struct {
+	fn func(Update, any)
+	id uint64
 }
 
 // Options configures a Doc. The zero Options is the default.
@@ -77,6 +85,81 @@ func (d *Doc) EncodeStateAsUpdate(since StateVector) Update {
 	// the delete set goes out whole whatever since says: tombstoning advances
 	// no clock, so a filtered one resurrects deleted text on the receiver
 	return encodeCanonical(structsSince(&d.store, since.m), deleteSetFromStore(&d.store))
+}
+
+// ApplyUpdate integrates u, which may repeat what this replica already holds.
+// A struct whose anchors are missing is dropped, so deliver in causal order.
+func (d *Doc) ApplyUpdate(u Update, origin any) error {
+	if len(u) == 0 {
+		return nil
+	}
+	// decode and validate with no lock held and nothing mutated
+	structs, ds, err := decodeUpdate(u)
+	if err != nil {
+		return err
+	}
+	if err := validateUpdate(structs); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	tx := d.begin(origin)
+	rejected := drive(tx, structs)
+	applyDeleteSet(tx, ds)
+	d.commit(tx)
+	if rejected {
+		return badUpdate(0, "struct.originOrder")
+	}
+	return nil
+}
+
+// applyDeleteSet tombstones every range of ds this replica can resolve. It runs
+// after the structs, since a delete usually names text carried in the same update.
+func applyDeleteSet(tx *Tx, ds deleteSet) {
+	for c, rs := range ds {
+		for _, r := range rs {
+			applyDeleteRange(tx, c, r.clock, r.end())
+		}
+	}
+}
+
+// applyDeleteRange tombstones the clocks [clock, end) of c that are held here.
+func applyDeleteRange(tx *Tx, c ClientID, clock, end uint64) {
+	st := &tx.doc.store
+	stop := min(end, st.stateOf(c))
+	if clock >= stop {
+		return
+	}
+	// splitting at both boundaries first, or marking a run tombstones text
+	// nobody deleted
+	for it := st.cleanStart(ID{Client: c, Clock: clock}); it != nil && it.id.Clock < stop; {
+		if it.endClock() > stop {
+			st.splitAt(it, uint32(stop-it.id.Clock))
+		}
+		deleteItem(tx, it)
+		// splitAt reallocates the client's slice, so ask the store again
+		it = st.nextBlock(it)
+	}
+}
+
+// OnUpdate registers fn, called once per committed transaction that changed the
+// document. The returned func unregisters fn and is idempotent.
+func (d *Doc) OnUpdate(fn func(u Update, origin any)) (cancel func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.nextObsID++
+	o := &updateObserver{fn: fn, id: d.nextObsID}
+	d.updObs = append(d.updObs, o)
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		for i, x := range d.updObs {
+			if x.id == o.id {
+				// a fresh array, so a dispatch already under way is untouched
+				d.updObs = append(d.updObs[:i:i], d.updObs[i+1:]...)
+				return
+			}
+		}
+	}
 }
 
 // Transact runs fn as one atomic change. fn must not call any method on the Doc

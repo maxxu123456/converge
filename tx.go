@@ -1,14 +1,18 @@
 package converge
 
-import "unicode/utf8"
+import (
+	"slices"
+	"unicode/utf8"
+)
 
 // Tx is the sole mutation surface, and the only legal way to read a Text while
 // a transaction is open. It is valid only inside the Transact callback.
 type Tx struct {
 	doc     *Doc
 	origin  any
-	closed  bool      // set once the callback has returned
-	deleted deleteSet // runes this transaction turned into tombstones
+	closed  bool                // set once the callback has returned
+	before  map[ClientID]uint64 // the store's state vector at begin
+	deleted deleteSet           // runes this transaction turned into tombstones
 }
 
 // begin opens the document's single reusable transaction. The caller holds the lock.
@@ -16,17 +20,42 @@ func (d *Doc) begin(origin any) *Tx {
 	if d.txOpen {
 		panic("converge: transaction already open")
 	}
-	d.tx = Tx{doc: d, origin: origin, deleted: deleteSet{}}
+	d.tx = Tx{doc: d, origin: origin, before: d.store.stateVector(), deleted: deleteSet{}}
 	d.txOpen = true
 	return &d.tx
 }
 
-// commit closes the transaction and releases the document lock.
+// commit closes the transaction, releases the document lock and hands the
+// incremental update to the observers with the lock down.
 func (d *Doc) commit(tx *Tx) {
 	tx.deleted.normalize()
+	changed := !equalClocks(tx.before, d.store.stateVector()) || !tx.deleted.empty()
 	tx.closed = true
 	d.txOpen = false
+	if !changed {
+		// a transaction that changed nothing emits nothing, which is what
+		// stops a duplicate update from starting an echo storm
+		d.mu.Unlock()
+		return
+	}
+	upd := encodeCanonical(structsSince(&d.store, tx.before), tx.deleted)
+	obs, origin := slices.Clone(d.updObs), tx.origin
 	d.mu.Unlock()
+	for _, o := range obs {
+		o.fn(upd, origin)
+	}
+}
+
+func equalClocks(a, b map[ClientID]uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for c, clock := range a {
+		if b[c] != clock {
+			return false
+		}
+	}
+	return true
 }
 
 // check panics unless t belongs to tx's Doc and tx is still open.
