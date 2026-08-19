@@ -6,6 +6,10 @@ import "errors"
 // roots, which no correct replica can produce.
 var errParentMismatch = errors.New("converge: origins name different roots")
 
+// errOriginOrder is raised when a struct's origin does not lie to the left of
+// its rightOrigin in this replica's list.
+var errOriginOrder = errors.New("converge: origins out of order")
+
 // materialize turns a decoded struct into an item and resolves its anchors
 // against this replica's list. offset trims a prefix we already hold.
 func materialize(tx *Tx, s decoded, offset uint32) (*item, error) {
@@ -75,12 +79,14 @@ func drive(tx *Tx, structs map[ClientID][]decoded) (rejected bool) {
 					break
 				}
 				it, err := materialize(tx, s, uint32(state-s.clock))
+				if err == nil {
+					err = integrate(tx, it)
+				}
 				if err != nil {
 					// the rest of c is one clock chain that can never complete
 					i, rejected = len(ss), true
 					break
 				}
-				integrate(tx, it)
 				i++
 				progress = true
 			}
@@ -104,11 +110,60 @@ func originsPresent(st *structStore, s decoded) bool {
 	return true
 }
 
-// integrate splices it into the list between it.left and it.right and updates
-// its parent's visible counters.
-func integrate(tx *Tx, it *item) {
+// integrate splices it into the list, scanning conflicts in YATA order, and
+// updates its parent's visible counters.
+func integrate(tx *Tx, it *item) error {
 	parent := it.parent
-	// read left.right before overwriting it
+	left, right := it.left, it.right
+	// did anything land in the gap since it was created? inverting this guard
+	// is a divergence, skipping it is only slow
+	contested := (left == nil && (right == nil || right.left != nil)) ||
+		(left != nil && left.right != right)
+
+	if contested {
+		o := parent.start
+		if left != nil {
+			o = left.right
+		}
+		before := map[ID]struct{}{} // everything scanned so far
+		conf := map[ID]struct{}{}   // everything scanned since left last moved
+	scan:
+		for o != nil && o != right {
+			before[o.id] = struct{}{}
+			conf[o.id] = struct{}{}
+			switch {
+			case o.origin == it.origin:
+				// o and it claim one insertion point, so break the tie on
+				// ClientID, the only totally ordered replica-free value there is
+				if o.id.Client >= it.id.Client {
+					break scan // we lost, o is our right neighbour
+				}
+				left = o
+				clear(conf) // everything up to o is settled
+			case !o.origin.IsZero():
+				if _, walked := before[o.origin]; !walked {
+					break scan // o hangs off something outside our window
+				}
+				if _, contesting := conf[o.origin]; !contesting {
+					// o descends from an item we already sit to the right of
+					left = o
+					clear(conf)
+				}
+			default:
+				break scan // o has no origin and is not our conflict peer
+			}
+			o = o.right
+		}
+		// walking off the end with a right anchor means the origin does not lie
+		// left of the rightOrigin here, which no correct replica produces
+		if o == nil && right != nil {
+			return errOriginOrder
+		}
+		it.left = left
+	}
+
+	// read left.right before overwriting it, and recompute right from the final
+	// left: the rightOrigin only ever served as the scan terminator
 	if it.left != nil {
 		it.right = it.left.right
 		it.left.right = it
@@ -125,4 +180,5 @@ func integrate(tx *Tx, it *item) {
 		parent.byteLen += len(it.content)
 		parent.u16Len += int(it.u16Len)
 	}
+	return nil
 }
