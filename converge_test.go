@@ -545,3 +545,40 @@ func TestRepeatedTombstoneChangesNothing(t *testing.T) {
 		t.Errorf("transitions %v, want one range covering three clocks", got)
 	}
 }
+
+func TestOnUpdateFiresOncePerChangedTransaction(t *testing.T) {
+	d := NewDocWith(Options{ClientID: 1})
+	tb := d.Text("body")
+	var origins []any
+	cancel := d.OnUpdate(func(u Update, origin any) {
+		if len(u) == 0 {
+			t.Error("an observer was handed an empty update")
+		}
+		origins = append(origins, origin)
+	})
+
+	d.Transact("typing", func(tx *Tx) {
+		tx.Insert(tb, 0, "ab")
+		tx.Insert(tb, 2, "cd")
+		tx.Delete(tb, 0, 1)
+	})
+	if len(origins) != 1 || origins[0] != "typing" {
+		t.Fatalf("one transaction produced %v", origins)
+	}
+
+	// no-ops change no clock and no tombstone, so they emit nothing
+	d.Transact("idle", func(tx *Tx) {
+		tx.Insert(tb, 0, "")
+		tx.Delete(tb, 0, 0)
+	})
+	if len(origins) != 1 {
+		t.Fatalf("a transaction that changed nothing emitted %v", origins[1:])
+	}
+
+	cancel()
+	cancel()
+	d.Transact("typing", func(tx *Tx) { tx.Insert(tb, 0, "z") })
+	if len(origins) != 1 {
+		t.Fatalf("a cancelled observer fired again: %v", origins[1:])
+	}
+}
