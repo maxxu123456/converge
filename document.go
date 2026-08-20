@@ -129,8 +129,8 @@ func applyDeleteRange(tx *Tx, c ClientID, clock, end uint64) {
 	if clock >= stop {
 		return
 	}
-	// splitting at both boundaries first, or marking a run tombstones text
-	// nobody deleted
+	// split at both range boundaries before marking, or a run only partly
+	// covered takes visible text down with it
 	for it := st.cleanStart(ID{Client: c, Clock: clock}); it != nil && it.id.Clock < stop; {
 		if it.endClock() > stop {
 			st.splitAt(it, uint32(stop-it.id.Clock))
