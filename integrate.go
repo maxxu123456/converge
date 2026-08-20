@@ -1,6 +1,9 @@
 package converge
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 // errParentMismatch is raised when a struct's two anchors sit in different
 // roots, which no correct replica can produce.
@@ -125,12 +128,13 @@ func integrate(tx *Tx, it *item) error {
 		if left != nil {
 			o = left.right
 		}
-		before := map[ID]struct{}{} // everything scanned so far
-		conf := map[ID]struct{}{}   // everything scanned since left last moved
+		// these are compared by pointer: keyed by id, before would hold a run's
+		// first id while the lookup asks for its last, which kills case 2
+		var before, conf []*item // scanned so far, and scanned since left moved
 	scan:
 		for o != nil && o != right {
-			before[o.id] = struct{}{}
-			conf[o.id] = struct{}{}
+			before = append(before, o)
+			conf = append(conf, o)
 			switch {
 			case o.origin == it.origin:
 				// o and it claim one insertion point, so break the tie on
@@ -139,15 +143,16 @@ func integrate(tx *Tx, it *item) error {
 					break scan // we lost, o is our right neighbour
 				}
 				left = o
-				clear(conf) // everything up to o is settled
+				conf = conf[:0] // everything up to o is settled
 			case !o.origin.IsZero():
-				if _, walked := before[o.origin]; !walked {
+				oo := tx.doc.store.get(o.origin) // the run holding that clock, no split
+				if !slices.Contains(before, oo) {
 					break scan // o hangs off something outside our window
 				}
-				if _, contesting := conf[o.origin]; !contesting {
+				if !slices.Contains(conf, oo) {
 					// o descends from an item we already sit to the right of
 					left = o
-					clear(conf)
+					conf = conf[:0]
 				}
 			default:
 				break scan // o has no origin and is not our conflict peer
