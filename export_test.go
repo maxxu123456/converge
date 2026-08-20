@@ -1,5 +1,13 @@
 package converge
 
+import "testing"
+
+// Validate re-exports the invariant check, which the external tests also run.
+func Validate(t testing.TB, d *Doc) {
+	t.Helper()
+	validate(t, d)
+}
+
 // forceSplit shatters every run into single-rune blocks, so a test can check
 // that nothing a reader sees depends on where the block boundaries fall.
 func forceSplit(s *structStore) {
