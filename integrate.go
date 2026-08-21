@@ -139,11 +139,14 @@ func integrate(tx *Tx, it *item) error {
 			case o.origin == it.origin:
 				// o and it claim one insertion point, so break the tie on
 				// ClientID, the only totally ordered replica-free value there is
-				if o.id.Client >= it.id.Client {
-					break scan // we lost, o is our right neighbour
+				if o.id.Client < it.id.Client {
+					left = o
+					conf = conf[:0] // everything up to o is settled
+				} else if it.rightOrigin == o.rightOrigin {
+					break scan // the same interval, and we lost: o is our right neighbour
 				}
-				left = o
-				conf = conf[:0] // everything up to o is settled
+				// o reaches further right than we do, so its own subtree may
+				// still hold items that have to precede us: keep scanning
 			case !o.origin.IsZero():
 				oo := tx.doc.store.get(o.origin) // the run holding that clock, no split
 				if !slices.Contains(before, oo) {
