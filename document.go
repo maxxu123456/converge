@@ -1,6 +1,9 @@
 package converge
 
-import "sync"
+import (
+	"slices"
+	"sync"
+)
 
 // Doc is a CRDT document: named Text values sharing one replica identity and
 // one causal history. Safe for concurrent use, but never copy one.
@@ -14,8 +17,17 @@ type Doc struct {
 	tx     Tx // the single reusable transaction value
 	txOpen bool
 
-	updObs    []*observer[func(Update, any)]
-	nextObsID uint64
+	queue      []notification
+	delivering bool
+	updObs     []*observer[func(Update, any)]
+	nextObsID  uint64
+}
+
+// notification is one committed change waiting to be handed to the observers.
+type notification struct {
+	events []Event
+	update Update
+	origin any
 }
 
 // Options configures a Doc. The zero Options is the default.
@@ -142,6 +154,28 @@ func (d *Doc) OnUpdate(fn func(u Update, origin any)) (cancel func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return addObserver(d, &d.updObs, fn)
+}
+
+// dispatch delivers one notification with the document lock released, and
+// retakes the lock even when an observer panics.
+func (d *Doc) dispatch(n notification) {
+	// the lists are snapshotted here, so cancelling during dispatch is legal
+	// and takes effect from the next notification
+	tobs := make([][]*observer[func(Event)], len(n.events))
+	for i, ev := range n.events {
+		tobs[i] = slices.Clone(ev.Text.obs)
+	}
+	uobs := slices.Clone(d.updObs)
+	d.mu.Unlock()
+	defer d.mu.Lock()
+	for i, ev := range n.events {
+		for _, o := range tobs[i] {
+			o.fn(ev)
+		}
+	}
+	for _, o := range uobs {
+		o.fn(n.update, n.origin)
+	}
 }
 
 // Transact runs fn as one atomic change. fn must not call any method on the Doc

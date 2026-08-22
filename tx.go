@@ -1,9 +1,6 @@
 package converge
 
-import (
-	"slices"
-	"unicode/utf8"
-)
+import "unicode/utf8"
 
 // Tx is the sole mutation surface, and the only legal way to read a Text while
 // a transaction is open. It is valid only inside the Transact callback.
@@ -26,8 +23,8 @@ func (d *Doc) begin(origin any, local bool) *Tx {
 	return &d.tx
 }
 
-// commit closes the transaction, releases the document lock and hands the
-// incremental update to the observers with the lock down.
+// commit closes the transaction, releases the document lock and delivers what
+// changed to the observers with the lock down.
 func (d *Doc) commit(tx *Tx) {
 	tx.deleted.normalize()
 	changed := !equalClocks(tx.before, d.store.stateVector()) || !tx.deleted.empty()
@@ -41,21 +38,20 @@ func (d *Doc) commit(tx *Tx) {
 	}
 	upd := encodeCanonical(structsSince(&d.store, tx.before), tx.deleted)
 	events := deltasFor(tx)
-	// each list is snapshotted under the lock, so cancelling during dispatch
-	// is legal and takes effect from the next notification
-	tobs := make([][]*observer[func(Event)], len(events))
-	for i, ev := range events {
-		tobs[i] = slices.Clone(ev.Text.obs)
+	d.queue = append(d.queue, notification{events: events, update: upd, origin: tx.origin})
+	if d.delivering {
+		// hand it to the goroutine already draining, which is what keeps
+		// delivery in commit order without holding the mutex across user code
+		d.mu.Unlock()
+		return
 	}
-	uobs, origin := slices.Clone(d.updObs), tx.origin
-	d.mu.Unlock()
-	for i, ev := range events {
-		for _, o := range tobs[i] {
-			o.fn(ev)
-		}
-	}
-	for _, o := range uobs {
-		o.fn(upd, origin)
+	d.delivering = true
+	// by defer, so an observer that panics cannot wedge the document
+	defer func() { d.delivering = false; d.mu.Unlock() }()
+	for len(d.queue) > 0 {
+		n := d.queue[0]
+		d.queue = d.queue[1:]
+		d.dispatch(n)
 	}
 }
 
