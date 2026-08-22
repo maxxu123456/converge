@@ -97,7 +97,7 @@ func (d *Doc) ApplyUpdate(u Update, origin any) error {
 		return err
 	}
 	d.mu.Lock()
-	tx := d.begin(origin)
+	tx := d.begin(origin, false)
 	rejected := drive(tx, structs)
 	applyDeleteSet(tx, ds)
 	d.commit(tx)
@@ -148,7 +148,7 @@ func (d *Doc) OnUpdate(fn func(u Update, origin any)) (cancel func()) {
 // or on a Text: the document lock is held for the whole callback.
 func (d *Doc) Transact(origin any, fn func(tx *Tx)) {
 	d.mu.Lock()
-	tx := d.begin(origin)
+	tx := d.begin(origin, true)
 	committed := false
 	// what fn already applied is in the list, so a panicking fn still commits
 	defer func() {

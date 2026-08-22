@@ -10,17 +10,18 @@ import (
 type Tx struct {
 	doc     *Doc
 	origin  any
+	local   bool                // a Transact, rather than an ApplyUpdate
 	closed  bool                // set once the callback has returned
 	before  map[ClientID]uint64 // the store's state vector at begin
 	deleted deleteSet           // runes this transaction turned into tombstones
 }
 
 // begin opens the document's single reusable transaction. The caller holds the lock.
-func (d *Doc) begin(origin any) *Tx {
+func (d *Doc) begin(origin any, local bool) *Tx {
 	if d.txOpen {
 		panic("converge: transaction already open")
 	}
-	d.tx = Tx{doc: d, origin: origin, before: d.store.stateVector(), deleted: deleteSet{}}
+	d.tx = Tx{doc: d, origin: origin, local: local, before: d.store.stateVector(), deleted: deleteSet{}}
 	d.txOpen = true
 	return &d.tx
 }
@@ -39,9 +40,21 @@ func (d *Doc) commit(tx *Tx) {
 		return
 	}
 	upd := encodeCanonical(structsSince(&d.store, tx.before), tx.deleted)
-	obs, origin := slices.Clone(d.updObs), tx.origin
+	events := deltasFor(tx)
+	// each list is snapshotted under the lock, so cancelling during dispatch
+	// is legal and takes effect from the next notification
+	tobs := make([][]*observer[func(Event)], len(events))
+	for i, ev := range events {
+		tobs[i] = slices.Clone(ev.Text.obs)
+	}
+	uobs, origin := slices.Clone(d.updObs), tx.origin
 	d.mu.Unlock()
-	for _, o := range obs {
+	for i, ev := range events {
+		for _, o := range tobs[i] {
+			o.fn(ev)
+		}
+	}
+	for _, o := range uobs {
 		o.fn(upd, origin)
 	}
 }
