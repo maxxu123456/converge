@@ -14,13 +14,8 @@ type Doc struct {
 	tx     Tx // the single reusable transaction value
 	txOpen bool
 
-	updObs    []*updateObserver
+	updObs    []*observer[func(Update, any)]
 	nextObsID uint64
-}
-
-type updateObserver struct {
-	fn func(Update, any)
-	id uint64
 }
 
 // Options configures a Doc. The zero Options is the default.
@@ -146,20 +141,7 @@ func applyDeleteRange(tx *Tx, c ClientID, clock, end uint64) {
 func (d *Doc) OnUpdate(fn func(u Update, origin any)) (cancel func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.nextObsID++
-	o := &updateObserver{fn: fn, id: d.nextObsID}
-	d.updObs = append(d.updObs, o)
-	return func() {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		for i, x := range d.updObs {
-			if x.id == o.id {
-				// a fresh array, so a dispatch already under way is untouched
-				d.updObs = append(d.updObs[:i:i], d.updObs[i+1:]...)
-				return
-			}
-		}
-	}
+	return addObserver(d, &d.updObs, fn)
 }
 
 // Transact runs fn as one atomic change. fn must not call any method on the Doc

@@ -15,6 +15,15 @@ type Text struct {
 	runeLen int   // visible runes
 	byteLen int   // visible UTF-8 bytes
 	u16Len  int   // visible UTF-16 code units
+	obs     []*observer[func(Event)]
+}
+
+// Observe registers fn, called after each committed transaction that changed t.
+// fn runs with the document lock down, in commit order. cancel unregisters it.
+func (t *Text) Observe(fn func(Event)) (cancel func()) {
+	t.doc.mu.Lock()
+	defer t.doc.mu.Unlock()
+	return addObserver(t.doc, &t.obs, fn)
 }
 
 // Name returns the root name this Text was registered under.
