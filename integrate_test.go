@@ -246,3 +246,91 @@ func TestStructWithReversedAnchorsIsRejected(t *testing.T) {
 	}
 	checkLinks(t, td)
 }
+
+// TestCase2SkipsDescendantSubtree pins the trace the interleaving search found.
+// One replica types AB, a second inserts xx between them and then pp after xx,
+// a third inserts yy at the caret xx used. Every order must read A xx pp yy B.
+// pp hangs off the last id of the xx run, which a scan keyed by id never sees.
+func TestCase2SkipsDescendantSubtree(t *testing.T) {
+	a := NewDocWith(Options{ClientID: 1})
+	a.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "AB") })
+	base := a.EncodeStateAsUpdate(StateVector{})
+
+	// the two inserts travel as the transactions emitted them, so the receiver
+	// holds xx and pp as separate runs
+	b := NewDocWith(Options{ClientID: 2})
+	if err := b.ApplyUpdate(base, "peer"); err != nil {
+		t.Fatal(err)
+	}
+	var fromB []Update
+	b.OnUpdate(func(u Update, _ any) { fromB = append(fromB, bytes.Clone(u)) })
+	tb := b.Text("body")
+	b.Transact(nil, func(tx *Tx) { tx.Insert(tb, 1, "xx") })
+	b.Transact(nil, func(tx *Tx) { tx.Insert(tb, 3, "pp") })
+
+	c := NewDocWith(Options{ClientID: 3})
+	if err := c.ApplyUpdate(base, "peer"); err != nil {
+		t.Fatal(err)
+	}
+	c.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 1, "yy") })
+	fromC := c.EncodeStateAsUpdate(a.StateVector())
+
+	const want = "AxxppyyB"
+	for _, order := range [][]Update{
+		{base, fromB[0], fromB[1], fromC},
+		{base, fromC, fromB[0], fromB[1]},
+		{base, fromB[0], fromC, fromB[1]},
+	} {
+		r := NewDocWith(Options{ClientID: 4})
+		for i, u := range order {
+			if err := r.ApplyUpdate(u, "peer"); err != nil {
+				t.Fatalf("delivery %d: %v", i, err)
+			}
+			validate(t, r)
+		}
+		if got := r.Text("body").String(); got != want {
+			t.Fatalf("a replica reads %q, want %q", got, want)
+		}
+	}
+}
+
+// TestConcurrentAppendsAtEndOfDocument covers the case with no right anchor at
+// all: two replicas append past the same last rune, so only the client ids
+// order them. It fails if right is ever defaulted to left.right.
+func TestConcurrentAppendsAtEndOfDocument(t *testing.T) {
+	a := NewDocWith(Options{ClientID: 1})
+	a.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "A") })
+	base := a.EncodeStateAsUpdate(StateVector{})
+
+	b := NewDocWith(Options{ClientID: 2})
+	c := NewDocWith(Options{ClientID: 3})
+	for _, d := range []*Doc{b, c} {
+		if err := d.ApplyUpdate(base, "peer"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), tx.Len(tx.Text("body")), "B") })
+	c.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), tx.Len(tx.Text("body")), "C") })
+	fromB := b.EncodeStateAsUpdate(a.StateVector())
+	fromC := c.EncodeStateAsUpdate(a.StateVector())
+
+	const want = "ABC"
+	for _, order := range [][]Update{{fromB, fromC}, {fromC, fromB}} {
+		r := NewDocWith(Options{ClientID: 4})
+		if err := r.ApplyUpdate(base, "peer"); err != nil {
+			t.Fatal(err)
+		}
+		for i, u := range order {
+			if err := r.ApplyUpdate(u, "peer"); err != nil {
+				t.Fatalf("delivery %d: %v", i, err)
+			}
+			validate(t, r)
+		}
+		if got := r.Text("body").String(); got != want {
+			t.Fatalf("a replica reads %q, want %q", got, want)
+		}
+	}
+	sendState(t, b, c)
+	sendState(t, c, b)
+	assertConverged(t, b, c, want)
+}
