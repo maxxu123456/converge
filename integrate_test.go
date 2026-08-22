@@ -247,10 +247,9 @@ func TestStructWithReversedAnchorsIsRejected(t *testing.T) {
 	checkLinks(t, td)
 }
 
-// TestCase2SkipsDescendantSubtree pins the trace the interleaving search found.
-// One replica types AB, a second inserts xx between them and then pp after xx,
-// a third inserts yy at the caret xx used. Every order must read A xx pp yy B.
-// pp hangs off the last id of the xx run, which a scan keyed by id never sees.
+// TestCase2SkipsDescendantSubtree is the trace the search found: one replica
+// types AB, a second inserts xx between them and pp after xx, a third inserts
+// yy at the caret xx used. pp hangs off the last id of the xx run.
 func TestCase2SkipsDescendantSubtree(t *testing.T) {
 	a := NewDocWith(Options{ClientID: 1})
 	a.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "AB") })
@@ -294,9 +293,8 @@ func TestCase2SkipsDescendantSubtree(t *testing.T) {
 	}
 }
 
-// TestConcurrentAppendsAtEndOfDocument covers the case with no right anchor at
-// all: two replicas append past the same last rune, so only the client ids
-// order them. It fails if right is ever defaulted to left.right.
+// TestConcurrentAppendsAtEndOfDocument has no right anchor at all, so nothing
+// but the client ids orders the two appends.
 func TestConcurrentAppendsAtEndOfDocument(t *testing.T) {
 	a := NewDocWith(Options{ClientID: 1})
 	a.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "A") })
@@ -335,10 +333,9 @@ func TestConcurrentAppendsAtEndOfDocument(t *testing.T) {
 	assertConverged(t, b, c, want)
 }
 
-// TestLostTiebreakKeepsScanning is the other trace the search found. Three
-// replicas insert at one caret, and the one that lost the tiebreak (z) reaches
-// further right than y does, because z anchors on x rather than on B. Stopping
-// at z instead of scanning on puts y in front of it on one replica only.
+// TestLostTiebreakKeepsScanning is the other trace the search found: z lost the
+// tiebreak to y but reaches further right, since it anchors on x and not on B.
+// Stopping at z puts y in front of it on one replica only.
 func TestLostTiebreakKeepsScanning(t *testing.T) {
 	a := NewDocWith(Options{ClientID: 1})
 	a.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "AB") })

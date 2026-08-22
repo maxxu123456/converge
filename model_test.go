@@ -18,8 +18,7 @@ type modelItem struct {
 }
 
 // model is a second YATA implementation, deliberately naive: one item per rune,
-// a linear scan to integrate, a map to find, one root and no store. It exists
-// to separate "the run machinery is faithful" from "the algorithm is right".
+// a linear scan to integrate, a map to find, one root and no store.
 type model struct {
 	items []*modelItem
 	pos   map[ID]int
@@ -94,9 +93,8 @@ func (m *model) insert(s decoded) error {
 	return nil
 }
 
-// integrate walks the window between the two anchors: a direct conflict breaks
-// on client id, and an item descending from something already settled goes
-// before us. dest is where we land, conf where the still contested run starts.
+// integrate walks the window between the two anchors. dest is where we land,
+// conf where the run we are still contesting begins.
 func (m *model) integrate(it *modelItem) error {
 	start, end := 0, len(m.items)
 	if !it.origin.IsZero() {

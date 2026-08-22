@@ -17,9 +17,8 @@ type exAction struct {
 
 const exClients = 3
 
-// exWide covers the edit shapes. The two deep alphabets drop most of them to
-// buy one more action: exCarets stacks single runes at one caret, exRuns
-// anchors an insert inside a run someone else already holds.
+// exWide covers the edit shapes. The deep alphabets drop most of them to buy
+// one more action: one stacks runes at a caret, one anchors inside a run.
 var (
 	exWide = []exAction{
 		{'i', 1, 0}, {'i', 1, 1}, {'i', 1, -2}, {'i', 1, -1},
@@ -35,11 +34,9 @@ var (
 	}
 )
 
-// TestExhaustiveDeliveryInterleavings generates every trace of three clients
-// over a bounded alphabet and checks that every delivery order of their states,
-// with one update delivered twice, reaches the same bytes and the same text as
-// the oracle. Random traces reach the interesting conflict shapes far too
-// rarely: they need three concurrent inserts at one caret in a given id order.
+// TestExhaustiveDeliveryInterleavings generates every trace over a bounded
+// alphabet: each delivery order of the three states, one of them delivered
+// twice, must read what the oracle reads. Random traces hit these shapes rarely.
 func TestExhaustiveDeliveryInterleavings(t *testing.T) {
 	wide, deep := 6000, 7000
 	if testing.Short() {
