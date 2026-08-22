@@ -334,3 +334,52 @@ func TestConcurrentAppendsAtEndOfDocument(t *testing.T) {
 	sendState(t, c, b)
 	assertConverged(t, b, c, want)
 }
+
+// TestLostTiebreakKeepsScanning is the other trace the search found. Three
+// replicas insert at one caret, and the one that lost the tiebreak (z) reaches
+// further right than y does, because z anchors on x rather than on B. Stopping
+// at z instead of scanning on puts y in front of it on one replica only.
+func TestLostTiebreakKeepsScanning(t *testing.T) {
+	a := NewDocWith(Options{ClientID: 1})
+	a.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "AB") })
+	base := a.EncodeStateAsUpdate(StateVector{})
+
+	b := NewDocWith(Options{ClientID: 2})
+	c := NewDocWith(Options{ClientID: 3})
+	d := NewDocWith(Options{ClientID: 4})
+	for _, doc := range []*Doc{b, c, d} {
+		if err := doc.ApplyUpdate(base, "peer"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 1, "x") })
+	c.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 1, "y") })
+	fromB := b.EncodeStateAsUpdate(a.StateVector())
+	fromC := c.EncodeStateAsUpdate(a.StateVector())
+
+	// d sees x before it types, so z takes x as its right anchor, not B
+	if err := d.ApplyUpdate(fromB, "peer"); err != nil {
+		t.Fatal(err)
+	}
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 1, "z") })
+	fromD := d.EncodeStateAsUpdate(StateVector{})
+
+	const want = "AzxyB"
+	for _, order := range [][]Update{
+		{base, fromB, fromC, fromD},
+		{base, fromD, fromC},
+		{base, fromC, fromD},
+		{base, fromD, fromB, fromC},
+	} {
+		r := NewDocWith(Options{ClientID: 5})
+		for i, u := range order {
+			if err := r.ApplyUpdate(u, "peer"); err != nil {
+				t.Fatalf("delivery %d: %v", i, err)
+			}
+			validate(t, r)
+		}
+		if got := r.Text("body").String(); got != want {
+			t.Fatalf("a replica reads %q, want %q", got, want)
+		}
+	}
+}
