@@ -203,15 +203,15 @@ func TestWriteTo(t *testing.T) {
 	d.Transact(nil, func(tx *Tx) {
 		tx.Insert(tb, 0, "hello")
 		tx.Insert(tb, 5, " world")
-		tx.Delete(tb, 0, 1)
+		tx.Delete(tb, 5, 1)
 	})
 	var b strings.Builder
 	n, err := tb.WriteTo(&b)
 	if err != nil {
 		t.Fatalf("WriteTo: %v", err)
 	}
-	if b.String() != "ello world" || n != int64(len("ello world")) {
-		t.Fatalf("wrote %q (%d bytes), want %q", b.String(), n, "ello world")
+	if b.String() != "helloworld" || n != int64(len("helloworld")) {
+		t.Fatalf("wrote %q (%d bytes), want %q", b.String(), n, "helloworld")
 	}
 
 	w := &failingWriter{failOn: 2}
@@ -222,7 +222,7 @@ func TestWriteTo(t *testing.T) {
 	if n != int64(len(w.wrote)) {
 		t.Errorf("reported %d bytes after %d were written", n, len(w.wrote))
 	}
-	if len(w.wrote) == 0 || len(w.wrote) >= len("ello world") {
+	if len(w.wrote) == 0 || len(w.wrote) >= len("helloworld") {
 		t.Errorf("wrote %q, want the part before the failure", w.wrote)
 	}
 }
@@ -495,8 +495,11 @@ func TestInsertRecordsTheNeighboursItWasBornWith(t *testing.T) {
 	}
 
 	// appending after a run anchors on the run's LAST rune, not on its first
-	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 3, "Z") })
-	z := d.store.get(ID{9, 3})
+	var z *item
+	d.Transact(nil, func(tx *Tx) {
+		tx.Insert(tb, 3, "Z")
+		z = d.store.get(ID{9, 3}) // read here: the merge pass folds Z back into abc
+	})
 	if want := (ID{9, 2}); z.origin != want {
 		t.Errorf("origin %v, want %v", z.origin, want)
 	}
@@ -505,8 +508,11 @@ func TestInsertRecordsTheNeighboursItWasBornWith(t *testing.T) {
 	}
 	checkAgainstModel(t, tb, []rune("abcZ"))
 
-	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 1, "X") })
-	x := d.store.get(ID{9, 4})
+	var x *item
+	d.Transact(nil, func(tx *Tx) {
+		tx.Insert(tb, 1, "X")
+		x = d.store.get(ID{9, 4})
+	})
 	if want := (ID{9, 0}); x.origin != want {
 		t.Errorf("origin %v, want %v", x.origin, want)
 	}
@@ -517,8 +523,11 @@ func TestInsertRecordsTheNeighboursItWasBornWith(t *testing.T) {
 
 	// deleting the right neighbour must not change what the next insert anchors to
 	d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 2, 1) })
-	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 2, "Y") })
-	y := d.store.get(ID{9, 5})
+	var y *item
+	d.Transact(nil, func(tx *Tx) {
+		tx.Insert(tb, 2, "Y")
+		y = d.store.get(ID{9, 5})
+	})
 	if want := (ID{9, 4}); y.origin != want {
 		t.Errorf("origin %v, want %v", y.origin, want)
 	}

@@ -64,6 +64,7 @@ func deleteItem(tx *Tx, it *item) {
 	t.byteLen -= len(it.content)
 	t.u16Len -= int(it.u16Len)
 	tx.deleted.add(it.id.Client, it.id.Clock, uint64(it.runeLen))
+	tx.merge = append(tx.merge, it)
 }
 
 // utf8ByteOffset returns the byte index of rune off in s. off is always within

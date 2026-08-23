@@ -1,6 +1,7 @@
 package converge
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -441,4 +442,85 @@ func TestTryMergeLeftRequiresEveryPrecondition(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTypingBurstFoldsIntoOneRun(t *testing.T) {
+	d := NewDocWith(Options{ClientID: 1})
+	tb := d.Text("body")
+	for _, r := range "hello" {
+		d.Transact(nil, func(tx *Tx) { tx.Insert(tb, tx.Len(tb), string(r)) })
+		validate(t, d)
+	}
+	if got := tb.String(); got != "hello" {
+		t.Fatalf("text is %q, want %q", got, "hello")
+	}
+	if got := itemCount(&d.store); got != 1 {
+		t.Fatalf("five keystrokes left %d runs, want one", got)
+	}
+}
+
+func TestTombstonesFoldWhenTheirNeighbourGoes(t *testing.T) {
+	d := NewDocWith(Options{ClientID: 1})
+	tb := d.Text("body")
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "abcd") })
+	d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 2, 2) })
+	d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 0, 2) })
+	validate(t, d)
+
+	if got := tb.String(); got != "" {
+		t.Fatalf("text is %q, want it all deleted", got)
+	}
+	if got := itemCount(&d.store); got != 1 {
+		t.Fatalf("the store holds %d runs, want the tombstones folded into one", got)
+	}
+}
+
+func TestDeltaAfterMergeEmitsInsert(t *testing.T) {
+	d := NewDocWith(Options{ClientID: 1})
+	tb := d.Text("body")
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "hello") })
+
+	var got []Delta
+	tb.Observe(func(ev Event) { got = append(got, ev.Delta...) })
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 5, "!") })
+
+	want := []Delta{{Retain: 5}, {Insert: "!"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("delta %v, want %v", got, want)
+	}
+	if n := itemCount(&d.store); n != 1 {
+		t.Fatalf("the store holds %d runs, so the keystroke was classified before the fold", n)
+	}
+}
+
+// TestMergeRequiresRightOriginEquality builds the one shape where folding
+// without the rightOrigin test diverges: replica a holds l and r list-adjacent
+// and folds them, then w arrives and splits the fold back, inheriting the wrong
+// right neighbour. Replica c never sees them adjacent, so it keeps r's own.
+func TestMergeRequiresRightOriginEquality(t *testing.T) {
+	a := NewDocWith(Options{ClientID: 5})
+	b := NewDocWith(Options{ClientID: 9})
+	c := NewDocWith(Options{ClientID: 3})
+	ta, tc := a.Text("body"), c.Text("body")
+	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 0, "l") })
+	b.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "z") })
+	sendState(t, a, b)
+	sendState(t, b, a)
+	sendState(t, a, c)
+
+	// a types between l and z, so its two runs name different right neighbours
+	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 1, "r") })
+	// c types at the same spot, and wins the tiebreak, so on c the two runs of a
+	// are never list-adjacent
+	c.Transact(nil, func(tx *Tx) { tx.Insert(tc, 1, "w") })
+
+	sendState(t, a, c)
+	sendState(t, c, a)
+	sendState(t, a, b)
+	sendState(t, c, b)
+	validate(t, a)
+	validate(t, b)
+	validate(t, c)
+	assertConverged(t, a, c, "lwrz")
+	assertConverged(t, a, b, "lwrz")
 }

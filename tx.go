@@ -11,6 +11,7 @@ type Tx struct {
 	closed  bool                // set once the callback has returned
 	before  map[ClientID]uint64 // the store's state vector at begin
 	deleted deleteSet           // runes this transaction turned into tombstones
+	merge   []*item             // fold candidates: integrated here, or tombstoned here
 }
 
 // begin opens the document's single reusable transaction. The caller holds the lock.
@@ -38,6 +39,10 @@ func (d *Doc) commit(tx *Tx) {
 	}
 	upd := encodeCanonical(structsSince(&d.store, tx.before), tx.deleted)
 	events := deltasFor(tx)
+	// strictly last: folding a fresh keystroke into the run before it would put
+	// its clock below tx.before, and the delta would call it text that was
+	// always there
+	mergePass(tx)
 	d.queue = append(d.queue, notification{events: events, update: upd, origin: tx.origin})
 	if d.delivering {
 		// hand it to the goroutine already draining, which is what keeps

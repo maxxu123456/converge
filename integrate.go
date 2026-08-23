@@ -1,6 +1,7 @@
 package converge
 
 import (
+	"cmp"
 	"errors"
 	"slices"
 )
@@ -188,5 +189,34 @@ func integrate(tx *Tx, it *item) error {
 		parent.byteLen += len(it.content)
 		parent.u16Len += int(it.u16Len)
 	}
+	tx.merge = append(tx.merge, it)
 	return nil
+}
+
+// mergePass folds what this transaction changed into the runs around it, and
+// repeats until a round folds nothing, since one fold exposes the next pair.
+func mergePass(tx *Tx) {
+	st := &tx.doc.store
+	slices.SortFunc(tx.merge, func(a, b *item) int {
+		if a.id.Client != b.id.Client {
+			return cmp.Compare(a.id.Client, b.id.Client)
+		}
+		return cmp.Compare(a.id.Clock, b.id.Clock)
+	})
+	for progress := true; progress; {
+		progress = false
+		for _, it := range tx.merge {
+			if st.get(it.id) != it { // already folded into its neighbour
+				continue
+			}
+			if tryMergeLeft(st, it) {
+				progress = true
+			}
+			// whatever followed it is now list-adjacent to the run that
+			// absorbed it, and is not always a candidate of its own
+			if r := it.right; r != nil && tryMergeLeft(st, r) {
+				progress = true
+			}
+		}
+	}
 }
