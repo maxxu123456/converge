@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// exAction is one step of a generated trace: an edit by one client, or the
-// delivery of another client's state to it.
+// exAction is one step of a trace: an edit by one client, or the delivery of
+// another client's state to it.
 type exAction struct {
 	kind  byte // 'i' insert, 'd' delete, 'r' receive
 	n     int  // runes to insert or delete, or the peer offset to receive from
@@ -81,8 +81,8 @@ func exNext(seq []int, radix int) bool {
 	return false
 }
 
-// exTrace plays one generated trace and checks every delivery order of the
-// three resulting states.
+// exTrace plays one trace and checks every delivery order of the three
+// resulting states.
 func exTrace(t *testing.T, base string, alphabet []exAction, seq []int) {
 	t.Helper()
 	docs := make([]*Doc, exClients)
@@ -135,7 +135,7 @@ func exStep(docs []*Doc, actor int, a exAction) error {
 	return nil
 }
 
-// exIndex resolves a generated index: negative counts back from the end, so -1
+// exIndex resolves a trace index: negative counts back from the end, so -1
 // is the end of the text and -2 the caret one rune before it.
 func exIndex(length, where int) int {
 	if where < 0 {
