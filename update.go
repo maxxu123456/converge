@@ -27,6 +27,11 @@ func MergeUpdates(updates ...Update) (Update, error) {
 	for c, ss := range structs {
 		structs[c] = cover(ss)
 	}
+	// two updates can each be sound and still name each other's structs as
+	// origins, and only their union holds the cycle
+	if err := validateUpdate(structs); err != nil {
+		return nil, err
+	}
 	return encodeCanonical(structs, ds), nil
 }
 
