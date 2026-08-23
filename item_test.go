@@ -363,3 +363,82 @@ func TestUTF8ByteOffsetAndUTF16Len(t *testing.T) {
 		}
 	}
 }
+
+// mergePair returns a store holding two contiguous runs of one client, linked
+// the way a split leaves them, with a neighbour on each side.
+func mergePair() (*structStore, *item, *item) {
+	s := &structStore{}
+	parent := &Text{name: "body"}
+	l, r := newRun(2, 0, "ab"), newRun(2, 2, "cd")
+	chain(s, parent, newRun(1, 0, "L"), l, r, newRun(3, 0, "R"))
+	l.rightOrigin = r.rightOrigin // both halves of a split name the same right neighbour
+	return s, l, r
+}
+
+func TestTryMergeLeftFoldsOneRun(t *testing.T) {
+	s, l, r := mergePair()
+	tail := r.right
+
+	if !tryMergeLeft(s, r) {
+		t.Fatal("two halves of one run did not fold")
+	}
+	if l.content != "abcd" || l.runeLen != 4 || l.u16Len != 4 {
+		t.Fatalf("left run holds %q, %d runes, %d units", l.content, l.runeLen, l.u16Len)
+	}
+	if l.endClock() != 4 {
+		t.Fatalf("the folded run ends at clock %d, want 4", l.endClock())
+	}
+	if l.right != tail || tail.left != l {
+		t.Fatal("the folded run is not linked to what followed it")
+	}
+	if got := listText(s.clients[1].blocks[0]); got != "LabcdR" {
+		t.Fatalf("the list reads %q after the fold", got)
+	}
+}
+
+func TestSplitThenFoldRestoresTheRun(t *testing.T) {
+	for si, sample := range splitSamples {
+		for off := 1; off < len([]rune(sample)); off++ {
+			s := &structStore{}
+			it := newRun(2, 0, sample)
+			chain(s, &Text{name: "body"}, newRun(1, 0, "L"), it, newRun(3, 0, "R"))
+			it.deleted = off%2 == 0
+			want := *it
+
+			if !tryMergeLeft(s, s.splitAt(it, uint32(off))) {
+				t.Fatalf("sample %d offset %d: the halves of one split did not fold", si, off)
+			}
+			if *it != want {
+				t.Fatalf("sample %d offset %d: folding back gave %+v, want %+v", si, off, *it, want)
+			}
+		}
+	}
+}
+
+func TestTryMergeLeftRequiresEveryPrecondition(t *testing.T) {
+	cases := []struct {
+		name  string
+		spoil func(l, r *item)
+	}{
+		{"no left neighbour", func(l, r *item) { r.left = nil }},
+		{"another root", func(l, r *item) { r.parent = &Text{name: "notes"} }},
+		{"another client", func(l, r *item) { r.id.Client = 7 }},
+		{"a clock gap", func(l, r *item) { r.id.Clock++ }},
+		{"something between them", func(l, r *item) { l.right = newRun(4, 0, "M") }},
+		{"an origin naming elsewhere", func(l, r *item) { r.origin = ID{1, 0} }},
+		{"a narrower insertion interval", func(l, r *item) { r.rightOrigin = ID{9, 0} }},
+		{"one side tombstoned", func(l, r *item) { r.deleted = true }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, l, r := mergePair()
+			c.spoil(l, r)
+			if tryMergeLeft(s, r) {
+				t.Fatal("folded a pair that no split could have produced")
+			}
+			if l.content != "ab" || l.runeLen != 2 || l.endClock() != 2 {
+				t.Fatalf("a refused fold left %q, %d runes", l.content, l.runeLen)
+			}
+		})
+	}
+}

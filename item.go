@@ -23,6 +23,35 @@ func (it *item) lastID() ID {
 
 func (it *item) endClock() uint64 { return it.id.Clock + uint64(it.runeLen) }
 
+// tryMergeLeft folds r into its left neighbour when the two are one run that a
+// split could have produced. All six tests are load-bearing.
+func tryMergeLeft(st *structStore, r *item) bool {
+	l := r.left
+	if l == nil || l.parent != r.parent || l.id.Client != r.id.Client {
+		return false
+	}
+	if l.endClock() != r.id.Clock || l.right != r {
+		return false
+	}
+	// the same insertion interval, or the fold erases that r's was the narrower
+	// one and a later concurrent item picks the other side of it
+	if r.origin != l.lastID() || l.rightOrigin != r.rightOrigin {
+		return false
+	}
+	// folding across a tombstone boundary would put live runes in the delete set
+	if l.deleted != r.deleted {
+		return false
+	}
+	l.content += r.content
+	l.runeLen += r.runeLen
+	l.u16Len += r.u16Len
+	l.right = r.right
+	if r.right != nil {
+		r.right.left = l
+	}
+	return true
+}
+
 // deleteItem tombstones it. This is the only place deleted is ever set, and it
 // returns early on a tombstone, so the accounting cannot drift.
 func deleteItem(tx *Tx, it *item) {
