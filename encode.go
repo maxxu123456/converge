@@ -63,16 +63,16 @@ func structsSince(st *structStore, since map[ClientID]uint64) map[ClientID][]dec
 		i, _ := cb.find(from)
 		ss := make([]decoded, 0, len(cb.blocks)-i)
 		for _, it := range cb.blocks[i:] {
-			ss = append(ss, sliceStruct(it, from))
+			ss = append(ss, sliceStruct(structOf(it), from))
 		}
 		out[c] = ss
 	}
 	return out
 }
 
-// sliceStruct describes it from fromClock on. A fromClock inside the run cuts
-// it by splitAt's rule, so the receiver rebuilds the same fields.
-func sliceStruct(it *item, fromClock uint64) decoded {
+// structOf describes it the way the wire carries it. Only an item with neither
+// anchor names its root.
+func structOf(it *item) decoded {
 	s := decoded{
 		client:      it.id.Client,
 		clock:       it.id.Clock,
@@ -85,6 +85,12 @@ func sliceStruct(it *item, fromClock uint64) decoded {
 	if s.origin.IsZero() && s.rightOrigin.IsZero() {
 		s.parentName = it.parent.name
 	}
+	return s
+}
+
+// sliceStruct returns what is left of s from fromClock on. A fromClock inside
+// the run cuts it by splitAt's rule, so the receiver rebuilds the same fields.
+func sliceStruct(s decoded, fromClock uint64) decoded {
 	if fromClock <= s.clock {
 		return s
 	}
@@ -93,9 +99,9 @@ func sliceStruct(it *item, fromClock uint64) decoded {
 	s.clock = fromClock
 	s.origin = ID{Client: s.client, Clock: fromClock - 1}
 	s.parentName = "" // the cut half inherits its parent from the half before it
+	s.u16Len -= utf16LenOf(s.content[:b])
 	s.content = s.content[b:]
 	s.runeLen -= off
-	s.u16Len -= utf16LenOf(it.content[:b])
 	return s
 }
 
