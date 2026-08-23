@@ -1,9 +1,6 @@
 package converge
 
-import (
-	"slices"
-	"sync"
-)
+import "sync"
 
 // Doc is a CRDT document: named Text values sharing one replica identity and
 // one causal history. Safe for concurrent use, but never copy one.
@@ -154,43 +151,4 @@ func (d *Doc) OnUpdate(fn func(u Update, origin any)) (cancel func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return addObserver(d, &d.updObs, fn)
-}
-
-// dispatch delivers one notification with the document lock released, and
-// retakes the lock even when an observer panics.
-func (d *Doc) dispatch(n notification) {
-	// the lists are snapshotted here, so cancelling during dispatch is legal
-	// and takes effect from the next notification
-	tobs := make([][]*observer[func(Event)], len(n.events))
-	for i, ev := range n.events {
-		tobs[i] = slices.Clone(ev.Text.obs)
-	}
-	uobs := slices.Clone(d.updObs)
-	d.mu.Unlock()
-	defer d.mu.Lock()
-	for i, ev := range n.events {
-		for _, o := range tobs[i] {
-			o.fn(ev)
-		}
-	}
-	for _, o := range uobs {
-		o.fn(n.update, n.origin)
-	}
-}
-
-// Transact runs fn as one atomic change. fn must not call any method on the Doc
-// or on a Text: the document lock is held for the whole callback.
-func (d *Doc) Transact(origin any, fn func(tx *Tx)) {
-	d.mu.Lock()
-	tx := d.begin(origin, true)
-	committed := false
-	// what fn already applied is in the list, so a panicking fn still commits
-	defer func() {
-		if !committed {
-			d.commit(tx)
-		}
-	}()
-	fn(tx)
-	committed = true
-	d.commit(tx)
 }
