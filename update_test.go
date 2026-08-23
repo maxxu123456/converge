@@ -251,3 +251,22 @@ func structCount(t *testing.T, u Update) int {
 	}
 	return n
 }
+
+func TestMergeUpdatesRejectsACyclicUnion(t *testing.T) {
+	// each input names a struct only the other one carries, so the cycle is in
+	// neither of them and in both together
+	first := encodeStructs(map[ClientID][]decoded{
+		1: {{client: 1, origin: ID{Client: 2}, content: "a", runeLen: 1, u16Len: 1}},
+	}, deleteSet{})
+	second := encodeStructs(map[ClientID][]decoded{
+		2: {{client: 2, origin: ID{Client: 1}, content: "b", runeLen: 1, u16Len: 1}},
+	}, deleteSet{})
+	for i, u := range []Update{first, second} {
+		if _, err := u.StateVector(); err != nil {
+			t.Fatalf("input %d is already invalid on its own: %v", i, err)
+		}
+	}
+	if _, err := MergeUpdates(first, second); !errors.Is(err, ErrMalformedUpdate) {
+		t.Fatalf("the merge accepted a cyclic union: %v", err)
+	}
+}
