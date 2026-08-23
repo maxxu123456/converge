@@ -508,13 +508,19 @@ func TestMergeRequiresRightOriginEquality(t *testing.T) {
 	sendState(t, b, a)
 	sendState(t, a, c)
 
-	// a types between l and z, so its two runs name different right neighbours
+	// a types between l and z, so its two runs name different right neighbours.
+	// The update goes out before the fold, so c holds the run a folded away.
+	var typed Update
+	cancel := a.OnUpdate(func(u Update, _ any) { typed = u })
 	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 1, "r") })
-	// c types at the same spot, and wins the tiebreak, so on c the two runs of a
+	cancel()
+
+	// c types at the same spot and wins the tiebreak, so on c the two runs of a
 	// are never list-adjacent
 	c.Transact(nil, func(tx *Tx) { tx.Insert(tc, 1, "w") })
-
-	sendState(t, a, c)
+	if err := c.ApplyUpdate(typed, "peer"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
 	sendState(t, c, a)
 	sendState(t, a, b)
 	sendState(t, c, b)
@@ -523,4 +529,36 @@ func TestMergeRequiresRightOriginEquality(t *testing.T) {
 	validate(t, c)
 	assertConverged(t, a, c, "lwrz")
 	assertConverged(t, a, b, "lwrz")
+}
+
+func TestMergeRemovesFoldedItemFromStore(t *testing.T) {
+	s, l, r := mergePair()
+	if !tryMergeLeft(s, r) {
+		t.Fatal("two halves of one run did not fold")
+	}
+	if got := s.get(r.id); got != l {
+		t.Fatalf("clock %d answers with %v, want the run that absorbed it", r.id.Clock, got)
+	}
+	if n := itemCount(s); n != 3 {
+		t.Fatalf("the store holds %d blocks, want 3", n)
+	}
+	checkContiguous(t, s)
+}
+
+func TestItemAnchoredInsideAFoldedRunSurvives(t *testing.T) {
+	a := NewDocWith(Options{ClientID: 1})
+	b := NewDocWith(Options{ClientID: 2})
+	ta, tb := a.Text("body"), b.Text("body")
+	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 0, "ab") })
+	// the second burst folds into the first at commit, so this clock is only
+	// covered by the folded run
+	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 2, "cd") })
+	sendState(t, a, b)
+
+	b.Transact(nil, func(tx *Tx) { tx.Insert(tb, 3, "X") })
+	sendState(t, b, a)
+
+	validate(t, a)
+	validate(t, b)
+	assertConverged(t, a, b, "abcXd")
 }

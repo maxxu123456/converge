@@ -96,6 +96,16 @@ func (s *structStore) add(it *item) {
 	cb.next = it.endClock()
 }
 
+// remove drops it from its client's blocks. Only the merge pass calls it, once
+// the run to its left has taken over the clocks it covered.
+func (s *structStore) remove(it *item) {
+	cb, i, ok := s.locate(it.id)
+	if !ok || cb.blocks[i] != it {
+		panic("converge: store.remove: item is not in the store")
+	}
+	cb.blocks = slices.Delete(cb.blocks, i, i+1)
+}
+
 // splitAt cuts it at rune offset off and returns the new right half. Both
 // halves keep the original deleted flag, so a split changes no visible length.
 func (s *structStore) splitAt(it *item, off uint32) *item {

@@ -27,15 +27,16 @@ func wantBroken(t *testing.T, d *Doc, want string) {
 	}
 }
 
-// loadedDoc returns a document holding three items: a tombstone, a live run and
-// a second run appended after it.
+// loadedDoc returns a document holding three items: a live run, the tombstone
+// of the rune after it, and a second live run. Deleting in the middle is what
+// keeps the two live runs from folding into one.
 func loadedDoc(t *testing.T) (*Doc, *Text) {
 	t.Helper()
 	d := NewDocWith(Options{ClientID: 1})
 	tb := d.Text("body")
 	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "hello") })
 	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 5, " world") })
-	d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 0, 1) })
+	d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 5, 1) })
 	validate(t, d)
 	return d, tb
 }
@@ -83,13 +84,11 @@ func TestBrokenBackLinkIsCaught(t *testing.T) {
 }
 
 func TestOrphanedItemIsCaught(t *testing.T) {
-	d, tb := loadedDoc(t)
-	it := d.store.get(ID{Client: 1, Clock: 1})
+	d, _ := loadedDoc(t)
+	// the tombstone: unlinking a visible run moves the counters too, and they
+	// are what the check would report
+	it := d.store.get(ID{Client: 1, Clock: 5})
 	it.left.right, it.right.left = it.right, it.left
-	// the counters have to follow, or they are what the check reports
-	tb.runeLen -= int(it.runeLen)
-	tb.byteLen -= len(it.content)
-	tb.u16Len -= int(it.u16Len)
 	wantBroken(t, d, "not in root")
 }
 

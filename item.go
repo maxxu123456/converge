@@ -42,6 +42,9 @@ func tryMergeLeft(st *structStore, r *item) bool {
 	if l.deleted != r.deleted {
 		return false
 	}
+	// before l grows: the blocks are searched by clock, and a grown l would
+	// shadow r and leave the orphan behind
+	st.remove(r)
 	l.content += r.content
 	l.runeLen += r.runeLen
 	l.u16Len += r.u16Len
