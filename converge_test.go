@@ -591,3 +591,28 @@ func TestOnUpdateFiresOncePerChangedTransaction(t *testing.T) {
 		t.Fatalf("a cancelled observer fired again: %v", origins[1:])
 	}
 }
+
+func TestStatsCountsTombstonesAndBytes(t *testing.T) {
+	d := NewDocWith(Options{ClientID: 1})
+	tb := d.Text("body")
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "héllo") })
+	d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 0, 2) })
+
+	want := Stats{Clients: 1, Items: 2, VisibleRunes: 3, TombstoneRunes: 2, ContentBytes: 6}
+	if got := d.Stats(); got != want {
+		t.Fatalf("stats %+v, want %+v", got, want)
+	}
+
+	e := NewDocWith(Options{ClientID: 2})
+	eb := e.Text("body")
+	e.Transact(nil, func(tx *Tx) { tx.Insert(eb, 0, "ab") })
+	if err := d.ApplyUpdate(e.EncodeStateAsUpdate(StateVector{}), nil); err != nil {
+		t.Fatal(err)
+	}
+	// a second replica's runs are held in the same store and counted the same way
+	want = Stats{Clients: 2, Items: 3, VisibleRunes: 5, TombstoneRunes: 2, ContentBytes: 8}
+	if got := d.Stats(); got != want {
+		t.Fatalf("stats %+v, want %+v", got, want)
+	}
+	Validate(t, d)
+}
