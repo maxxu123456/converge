@@ -81,3 +81,32 @@ func (ds deleteSet) empty() bool {
 	}
 	return true
 }
+
+// applyDeleteSet tombstones every range of ds this replica can resolve. It runs
+// after the structs, since a delete usually names text carried in the same update.
+func applyDeleteSet(tx *Tx, ds deleteSet) {
+	for c, rs := range ds {
+		for _, r := range rs {
+			applyDeleteRange(tx, c, r.clock, r.end())
+		}
+	}
+}
+
+// applyDeleteRange tombstones the clocks [clock, end) of c that are held here.
+func applyDeleteRange(tx *Tx, c ClientID, clock, end uint64) {
+	st := &tx.doc.store
+	stop := min(end, st.stateOf(c))
+	if clock >= stop {
+		return
+	}
+	// split at both range boundaries before marking, or a run only partly
+	// covered takes visible text down with it
+	for it := st.cleanStart(ID{Client: c, Clock: clock}); it != nil && it.id.Clock < stop; {
+		if it.endClock() > stop {
+			st.splitAt(it, uint32(stop-it.id.Clock))
+		}
+		deleteItem(tx, it)
+		// splitAt reallocates the client's slice, so ask the store again
+		it = st.nextBlock(it)
+	}
+}
