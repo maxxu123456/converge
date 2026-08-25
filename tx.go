@@ -18,7 +18,8 @@ type Tx struct {
 }
 
 // Transact runs fn as one atomic change. fn must not call any method on the Doc
-// or on a Text: the document lock is held for the whole callback.
+// or on a Text: the document lock is held for the whole callback. A panic from
+// fn commits what it had already applied and then propagates.
 func (d *Doc) Transact(origin any, fn func(tx *Tx)) {
 	d.mu.Lock()
 	tx := d.begin(origin, true)

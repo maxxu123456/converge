@@ -54,8 +54,9 @@ func (d *Doc) ClientID() ClientID {
 	return d.clientID
 }
 
-// Text returns the root Text named name, creating it on first use. It must not
-// be called from inside a Transact callback, use Tx.Text.
+// Text returns the root Text named name, creating it on first use. name must be
+// 1 to 255 bytes of valid UTF-8. Never call it from inside a Transact callback,
+// use Tx.Text.
 func (d *Doc) Text(name string) *Text {
 	d.mu.Lock()
 	defer d.mu.Unlock()
