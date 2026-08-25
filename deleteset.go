@@ -82,6 +82,36 @@ func (ds deleteSet) empty() bool {
 	return true
 }
 
+// deleteSetFromStore rebuilds the complete delete set by walking the store.
+// item.deleted is the only source of truth, so nothing can drift out of sync.
+func deleteSetFromStore(st *structStore) deleteSet {
+	ds := deleteSet{}
+	for c, cb := range st.clients {
+		for _, it := range cb.blocks {
+			if it.deleted {
+				ds.add(c, it.id.Clock, uint64(it.runeLen))
+			}
+		}
+	}
+	ds.normalize()
+	return ds
+}
+
+// deleteItem tombstones it. This is the only place deleted is ever set, and it
+// returns early on a tombstone, so the accounting cannot drift.
+func deleteItem(tx *Tx, it *item) {
+	if it.deleted {
+		return
+	}
+	it.deleted = true
+	t := it.parent
+	t.runeLen -= int(it.runeLen)
+	t.byteLen -= len(it.content)
+	t.u16Len -= int(it.u16Len)
+	tx.deleted.add(it.id.Client, it.id.Clock, uint64(it.runeLen))
+	tx.merge = append(tx.merge, it)
+}
+
 // applyDeleteSet tombstones every range of ds this replica can resolve. It runs
 // after the structs, since a delete usually names text carried in the same update.
 func applyDeleteSet(tx *Tx, ds deleteSet) {

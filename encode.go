@@ -105,21 +105,6 @@ func sliceStruct(s decoded, fromClock uint64) decoded {
 	return s
 }
 
-// deleteSetFromStore rebuilds the complete delete set by walking the store.
-// item.deleted is the only source of truth, so nothing can drift out of sync.
-func deleteSetFromStore(st *structStore) deleteSet {
-	ds := deleteSet{}
-	for c, cb := range st.clients {
-		for _, it := range cb.blocks {
-			if it.deleted {
-				ds.add(c, it.id.Clock, uint64(it.runeLen))
-			}
-		}
-	}
-	ds.normalize()
-	return ds
-}
-
 // encodeStructs emits structs as given, unfolded, so re-encoding a decoded
 // update reproduces its bytes. Each client's slice must be clock ordered.
 func encodeStructs(structs map[ClientID][]decoded, ds deleteSet) Update {
