@@ -595,7 +595,7 @@ func TestOnUpdateFiresOncePerChangedTransaction(t *testing.T) {
 func TestStatsCountsTombstonesAndBytes(t *testing.T) {
 	d := NewDocWith(Options{ClientID: 1})
 	tb := d.Text("body")
-	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "héllo") })
+	d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, "h\u00e9llo") })
 	d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 0, 2) })
 
 	want := Stats{Clients: 1, Items: 2, VisibleRunes: 3, TombstoneRunes: 2, ContentBytes: 6}
