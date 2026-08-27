@@ -58,14 +58,19 @@ func materialize(tx *Tx, s decoded, offset uint32) (*item, error) {
 }
 
 // drive integrates every struct whose dependencies this replica already holds,
-// cycling per-client cursors until a whole round makes no progress.
-func drive(tx *Tx, structs map[ClientID][]decoded) (rejected bool) {
+// cycling per-client cursors until a whole round makes no progress. What it
+// leaves over is causally blocked, not junk.
+func drive(tx *Tx, structs map[ClientID][]decoded) (leftover map[ClientID][]decoded, rejected bool) {
 	st := &tx.doc.store
 	order := sortedClients(structs)
 	cursor := make(map[ClientID]int, len(structs))
+	dead := make(map[ClientID]bool)
 	for {
 		progress := false
 		for _, c := range order {
+			if dead[c] {
+				continue
+			}
 			ss, i := structs[c], cursor[c]
 			// strictly by clock, so a struct never lands before its own predecessor
 			for i < len(ss) {
@@ -88,7 +93,7 @@ func drive(tx *Tx, structs map[ClientID][]decoded) (rejected bool) {
 				}
 				if err != nil {
 					// the rest of c is one clock chain that can never complete
-					i, rejected = len(ss), true
+					dead[c], rejected = true, true
 					break
 				}
 				i++
@@ -97,9 +102,18 @@ func drive(tx *Tx, structs map[ClientID][]decoded) (rejected bool) {
 			cursor[c] = i
 		}
 		if !progress {
-			return rejected
+			break
 		}
 	}
+	for _, c := range order {
+		if tail := structs[c][cursor[c]:]; !dead[c] && len(tail) > 0 {
+			if leftover == nil {
+				leftover = make(map[ClientID][]decoded, len(order))
+			}
+			leftover[c] = tail
+		}
+	}
+	return leftover, rejected
 }
 
 // originsPresent reports whether both of s's anchors are already in the store.

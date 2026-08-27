@@ -11,6 +11,10 @@ type Doc struct {
 	roots    map[string]*Text
 	store    structStore
 
+	// structs whose anchors this replica does not hold yet
+	pending      map[ClientID][]decoded
+	pendingCount int
+
 	tx     Tx // the single reusable transaction value
 	txOpen bool
 
@@ -43,7 +47,11 @@ func NewDocWith(opts Options) *Doc {
 	if c == 0 {
 		c = newClientID()
 	}
-	return &Doc{clientID: c, roots: make(map[string]*Text)}
+	return &Doc{
+		clientID: c,
+		roots:    make(map[string]*Text),
+		pending:  make(map[ClientID][]decoded),
+	}
 }
 
 // ClientID returns this replica's identity. Use it to skip drawing your own
@@ -93,7 +101,7 @@ func (d *Doc) EncodeStateAsUpdate(since StateVector) Update {
 }
 
 // ApplyUpdate integrates u, which may repeat what this replica already holds.
-// A struct whose anchors are missing is dropped, so deliver in causal order.
+// A struct whose anchors are missing is buffered, never dropped.
 func (d *Doc) ApplyUpdate(u Update, origin any) error {
 	if len(u) == 0 {
 		return nil
@@ -108,8 +116,9 @@ func (d *Doc) ApplyUpdate(u Update, origin any) error {
 	}
 	d.mu.Lock()
 	tx := d.begin(origin, false)
-	rejected := drive(tx, structs)
+	leftover, rejected := drive(tx, structs)
 	applyDeleteSet(tx, ds)
+	d.bufferStructs(leftover)
 	d.commit(tx)
 	if rejected {
 		return badUpdate(0, "struct.originOrder")
