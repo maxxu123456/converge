@@ -45,6 +45,18 @@ func (t *Text) installMarker(it *item, runeIdx, u16Idx int) {
 // clearMarkers forgets everything cached for t.
 func (t *Text) clearMarkers() { t.markers = [numMarkers]marker{} }
 
+// updateMarkerChanges shifts every cached index at or past runeIdx by an
+// insert of dRune visible runes.
+func (t *Text) updateMarkerChanges(runeIdx, dRune, dU16 int) {
+	for i := range t.markers {
+		m := &t.markers[i]
+		if m.stamp != 0 && m.rune >= runeIdx {
+			m.rune += dRune
+			m.u16 += dU16
+		}
+	}
+}
+
 // visibleIndexOf returns the visible rune and UTF-16 offsets of it's first
 // rune, walking left until a cached marker answers.
 func visibleIndexOf(it *item) (runeIdx, u16Idx int) {
