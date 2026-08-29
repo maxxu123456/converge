@@ -26,6 +26,11 @@ func (d *Doc) checkInvariants() error {
 			}
 		}
 	}
+	for _, t := range d.roots {
+		if err := checkMarkers(t); err != nil {
+			return err
+		}
+	}
 	if err := checkCanonicalDeleteSet(deleteSetFromStore(&d.store)); err != nil {
 		return err
 	}
@@ -142,6 +147,39 @@ func checkAnchors(st *structStore, pos map[*item]int, it *item) error {
 	}
 	if r := st.get(it.rightOrigin); r != nil && pos[r] <= pos[it] {
 		return fmt.Errorf("item %v has its rightOrigin %v at or to its left", it.id, r.id)
+	}
+	return nil
+}
+
+// checkMarkers asserts every cached marker still sits in t's list and still
+// names the index a fresh walk gives it.
+func checkMarkers(t *Text) error {
+	live := 0
+	for i := range t.markers {
+		if t.markers[i].stamp != 0 {
+			live++
+		}
+	}
+	found, r, u := 0, 0, 0
+	for it := t.start; it != nil; it = it.right {
+		for i := range t.markers {
+			m := &t.markers[i]
+			if m.stamp == 0 || m.it != it {
+				continue
+			}
+			found++
+			if m.rune != r || m.u16 != u {
+				return fmt.Errorf("root %q caches item %v at rune %d unit %d, the walk puts it at %d and %d",
+					t.name, it.id, m.rune, m.u16, r, u)
+			}
+		}
+		if !it.deleted {
+			r += int(it.runeLen)
+			u += int(it.u16Len)
+		}
+	}
+	if found != live {
+		return fmt.Errorf("root %q caches %d markers but only %d of them are in its list", t.name, live, found)
 	}
 	return nil
 }

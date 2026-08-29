@@ -562,3 +562,142 @@ func TestItemAnchoredInsideAFoldedRunSurvives(t *testing.T) {
 	validate(t, b)
 	assertConverged(t, a, b, "abcXd")
 }
+
+// markerDoc returns a document holding "abcdef" as three runs, each typed in
+// front of the last so the merge pass leaves them apart.
+func markerDoc(t *testing.T) (*Doc, *Text) {
+	t.Helper()
+	d := NewDocWith(Options{ClientID: 1})
+	tb := d.Text("body")
+	for _, s := range []string{"ef", "cd", "ab"} {
+		text := s
+		d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 0, text) })
+	}
+	validate(t, d)
+	return d, tb
+}
+
+// itemsOf lists t's runs in list order, tombstones included.
+func itemsOf(t *Text) []*item {
+	var its []*item
+	for it := t.start; it != nil; it = it.right {
+		its = append(its, it)
+	}
+	return its
+}
+
+// wantMarkers fails unless the cache holds exactly want: one rune index per item.
+func wantMarkers(t *testing.T, tb *Text, want map[*item]int) {
+	t.Helper()
+	got := make(map[*item]int)
+	for i := range tb.markers {
+		if m := &tb.markers[i]; m.stamp != 0 {
+			got[m.it] = m.rune
+		}
+	}
+	for it, r := range want {
+		switch g, cached := got[it]; {
+		case !cached:
+			t.Fatalf("nothing cached for %q, want rune %d", it.content, r)
+		case g != r:
+			t.Fatalf("%q is cached at rune %d, want %d", it.content, g, r)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("the cache holds %d markers, want %d", len(got), len(want))
+	}
+}
+
+// peerOf returns a second replica holding everything d holds.
+func peerOf(t *testing.T, d *Doc) (*Doc, *Text) {
+	t.Helper()
+	e := NewDocWith(Options{ClientID: 9})
+	sendState(t, d, e)
+	return e, e.Text("body")
+}
+
+// TestMarkerTransitions walks every way a marker is allowed to move. Anything
+// else touching those fields is silent corruption: a stale index inserts text
+// in the wrong place and raises no error.
+func TestMarkerTransitions(t *testing.T) {
+	t.Run("a lookup marks where it stopped", func(t *testing.T) {
+		d, tb := markerDoc(t)
+		its := itemsOf(tb)
+		tb.clearMarkers()
+		if got := tb.Slice(2, 4); got != "cd" {
+			t.Fatalf("Slice(2, 4) = %q", got)
+		}
+		wantMarkers(t, tb, map[*item]int{its[1]: 2})
+		validate(t, d)
+	})
+
+	t.Run("a local insert shifts what follows and marks itself", func(t *testing.T) {
+		d, tb := markerDoc(t)
+		its := itemsOf(tb)
+		tb.clearMarkers()
+		tb.installMarker(its[2], 4, 4)
+		d.Transact(nil, func(tx *Tx) { tx.Insert(tb, 1, "X") })
+		left := itemsOf(tb)[0] // the "ab" run, split by the insert
+		wantMarkers(t, tb, map[*item]int{left: 0, left.right: 1, its[2]: 5})
+		validate(t, d)
+	})
+
+	t.Run("a local delete drops its markers and pulls the rest back", func(t *testing.T) {
+		d, tb := markerDoc(t)
+		its := itemsOf(tb)
+		tb.clearMarkers()
+		tb.installMarker(its[1], 2, 2)
+		tb.installMarker(its[2], 4, 4)
+		d.Transact(nil, func(tx *Tx) { tx.Delete(tb, 2, 2) })
+		wantMarkers(t, tb, map[*item]int{its[2]: 2})
+		validate(t, d)
+	})
+
+	t.Run("a remote insert shifts what follows and marks itself", func(t *testing.T) {
+		d, tb := markerDoc(t)
+		its := itemsOf(tb)
+		e, te := peerOf(t, d)
+		e.Transact(nil, func(tx *Tx) { tx.Insert(te, 1, "Z") })
+		tb.clearMarkers()
+		tb.installMarker(its[2], 4, 4)
+		sendState(t, e, d)
+		wantMarkers(t, tb, map[*item]int{its[0].right: 1, its[2]: 5})
+		validate(t, d)
+	})
+
+	t.Run("a remote delete drops its markers and pulls the rest back", func(t *testing.T) {
+		d, tb := markerDoc(t)
+		its := itemsOf(tb)
+		e, te := peerOf(t, d)
+		e.Transact(nil, func(tx *Tx) { tx.Delete(te, 2, 2) })
+		tb.clearMarkers()
+		tb.installMarker(its[1], 2, 2)
+		tb.installMarker(its[2], 4, 4)
+		sendState(t, e, d)
+		wantMarkers(t, tb, map[*item]int{its[2]: 2})
+		validate(t, d)
+	})
+
+	t.Run("a split leaves the marker on the left half", func(t *testing.T) {
+		d, tb := markerDoc(t)
+		its := itemsOf(tb)
+		tb.clearMarkers()
+		tb.installMarker(its[1], 2, 2)
+		d.store.splitAt(its[1], 1)
+		wantMarkers(t, tb, map[*item]int{its[1]: 2})
+		validate(t, d)
+	})
+
+	t.Run("a fold repoints the marker onto the run that swallowed it", func(t *testing.T) {
+		d, tb := markerDoc(t)
+		its := itemsOf(tb)
+		tb.clearMarkers()
+		right := d.store.splitAt(its[1], 1)
+		tb.installMarker(right, 3, 3)
+		if !tryMergeLeft(&d.store, right) {
+			t.Fatal("the halves of one split did not fold")
+		}
+		wantMarkers(t, tb, map[*item]int{its[1]: 2})
+		validate(t, d)
+	})
+}

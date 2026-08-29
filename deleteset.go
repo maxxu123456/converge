@@ -105,7 +105,10 @@ func deleteItem(tx *Tx, it *item) {
 	}
 	it.deleted = true
 	t := it.parent
-	t.clearMarkers()
+	// a marker on a tombstone reports an index for text nobody can see
+	r, _ := visibleIndexOf(it)
+	t.dropMarkersOn(it)
+	t.updateMarkerChanges(r, -int(it.runeLen), -int(it.u16Len))
 	t.runeLen -= int(it.runeLen)
 	t.byteLen -= len(it.content)
 	t.u16Len -= int(it.u16Len)

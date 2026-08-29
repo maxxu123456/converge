@@ -116,6 +116,18 @@ func TestRightOriginOnTheWrongSideIsCaught(t *testing.T) {
 	wantBroken(t, d, "at or to its left")
 }
 
+func TestStaleMarkerIsCaught(t *testing.T) {
+	d, tb := loadedDoc(t)
+	tb.installMarker(tb.start, 1, 1)
+	wantBroken(t, d, "the walk puts it at")
+}
+
+func TestMarkerOutsideTheListIsCaught(t *testing.T) {
+	d, tb := loadedDoc(t)
+	tb.installMarker(newRun(7, 0, "x"), 0, 0)
+	wantBroken(t, d, "in its list")
+}
+
 func TestNonCanonicalDeleteSetIsCaught(t *testing.T) {
 	err := checkCanonicalDeleteSet(deleteSet{1: {{clock: 0, length: 2}, {clock: 2, length: 3}}})
 	if err == nil || !strings.Contains(err.Error(), "touches") {
