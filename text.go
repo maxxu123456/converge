@@ -105,6 +105,40 @@ func (t *Text) RuneIndex(utf16Index int) int {
 	return t.runeIndex(utf16Index)
 }
 
+// Position returns a sticky anchor for index that survives concurrent edits by
+// other replicas. index is clamped to [0, Len()], so Position never fails.
+func (t *Text) Position(index int, assoc Assoc) Position {
+	t.doc.mu.Lock()
+	defer t.doc.mu.Unlock()
+	if assoc != AssocBefore {
+		// one value per side, so == still answers "did that cursor move?"
+		assoc = AssocAfter
+	}
+	index = min(max(index, 0), t.runeLen)
+	switch {
+	case assoc == AssocBefore && index == 0:
+		return Position{name: t.name, kind: posStart, assoc: assoc}
+	case assoc == AssocAfter && index == t.runeLen:
+		return Position{name: t.name, kind: posEnd, assoc: assoc}
+	case assoc == AssocBefore:
+		return t.anchorAt(index-1, assoc)
+	default:
+		return t.anchorAt(index, assoc)
+	}
+}
+
+// anchorAt returns a position on the rune at visible index i, which must be
+// below t.runeLen. The caller holds the document lock.
+func (t *Text) anchorAt(i int, assoc Assoc) Position {
+	it, off := t.findVisible(i)
+	return Position{
+		name:  t.name,
+		item:  ID{Client: it.id.Client, Clock: it.id.Clock + uint64(off)},
+		kind:  posAnchored,
+		assoc: assoc,
+	}
+}
+
 // visible returns t's visible content. The caller holds the document lock.
 func (t *Text) visible() string {
 	var b strings.Builder
