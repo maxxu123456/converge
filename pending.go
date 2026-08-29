@@ -34,3 +34,50 @@ func (d *Doc) tidyPending(c ClientID) {
 	d.pendingCount -= len(ss) - len(kept)
 	d.pending[c] = kept
 }
+
+// drainPending retries the buffered structs until a round integrates nothing.
+// It runs inside the transaction that unblocked them, so a whole cascade still
+// emits one delta per Text and one relayed update.
+func drainPending(tx *Tx) {
+	d := tx.doc
+	st := &d.store
+	for progress := true; progress; {
+		progress = false
+		for _, c := range sortedClients(d.pending) {
+			list := d.pending[c]
+			i := 0
+			for i < len(list) {
+				s := list[i]
+				state := st.stateOf(c)
+				if s.endClock() <= state { // some other delivery got there first
+					i++
+					d.pendingCount--
+					progress = true
+					continue
+				}
+				// a later struct of c starts higher still, so it is blocked too
+				if s.clock > state || !originsPresent(st, s) {
+					break
+				}
+				it, err := materialize(tx, s, uint32(state-s.clock))
+				if err == nil {
+					err = integrate(tx, it)
+				}
+				if err != nil {
+					// the rest of c is one clock chain that can never complete
+					d.pendingCount -= len(list) - i
+					i = len(list)
+					break
+				}
+				i++
+				d.pendingCount--
+				progress = true
+			}
+			if list = list[i:]; len(list) == 0 {
+				delete(d.pending, c)
+			} else {
+				d.pending[c] = list
+			}
+		}
+	}
+}

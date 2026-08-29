@@ -48,6 +48,9 @@ func (d *Doc) begin(origin any, local bool) *Tx {
 // commit closes the transaction, releases the document lock and delivers what
 // changed to the observers with the lock down.
 func (d *Doc) commit(tx *Tx) {
+	// a local edit is as likely to unblock a buffered struct as a remote one,
+	// so the retry belongs at the end of every transaction
+	drainPending(tx)
 	tx.deleted.normalize()
 	changed := !equalClocks(tx.before, d.store.stateVector()) || !tx.deleted.empty()
 	tx.closed = true

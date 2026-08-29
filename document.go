@@ -101,7 +101,7 @@ func (d *Doc) EncodeStateAsUpdate(since StateVector) Update {
 }
 
 // ApplyUpdate integrates u, which may repeat what this replica already holds.
-// A struct whose anchors are missing is buffered, never dropped.
+// A struct whose anchors are missing is buffered and retried, never dropped.
 func (d *Doc) ApplyUpdate(u Update, origin any) error {
 	if len(u) == 0 {
 		return nil
