@@ -81,3 +81,33 @@ func drainPending(tx *Tx) {
 		}
 	}
 }
+
+// bufferDeleteSet parks the delete ranges naming structs this replica does not
+// hold, then retries the backlog in case this update brought what it needed.
+func (d *Doc) bufferDeleteSet(tx *Tx, unapplied deleteSet) {
+	if unapplied.empty() {
+		return
+	}
+	d.pendingDS.union(unapplied)
+	retryPendingDeleteSet(tx)
+}
+
+// retryPendingDeleteSet reapplies every buffered range and keeps whatever is
+// still out of reach. The ranges never pre-mark an item, so nothing here can
+// tombstone text the delete did not name.
+func retryPendingDeleteSet(tx *Tx) {
+	d := tx.doc
+	if len(d.pendingDS) == 0 {
+		return
+	}
+	kept := deleteSet{}
+	for c, rs := range d.pendingDS {
+		for _, r := range rs {
+			if tail := applyDeleteRange(tx, c, r.clock, r.end()); tail != nil {
+				kept.add(c, tail.clock, tail.length)
+			}
+		}
+	}
+	kept.normalize()
+	d.pendingDS = kept
+}

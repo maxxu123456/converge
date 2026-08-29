@@ -112,23 +112,32 @@ func deleteItem(tx *Tx, it *item) {
 	tx.merge = append(tx.merge, it)
 }
 
-// applyDeleteSet tombstones every range of ds this replica can resolve. It runs
-// after the structs, since a delete usually names text carried in the same update.
-func applyDeleteSet(tx *Tx, ds deleteSet) {
+// applyDeleteSet tombstones every range of ds this replica can resolve and
+// returns what it could not. It runs after the structs, since a delete usually
+// names text carried in the same update.
+func applyDeleteSet(tx *Tx, ds deleteSet) deleteSet {
+	unapplied := deleteSet{}
 	for c, rs := range ds {
 		for _, r := range rs {
-			applyDeleteRange(tx, c, r.clock, r.end())
+			if tail := applyDeleteRange(tx, c, r.clock, r.end()); tail != nil {
+				unapplied.add(c, tail.clock, tail.length)
+			}
 		}
 	}
+	unapplied.normalize()
+	return unapplied
 }
 
-// applyDeleteRange tombstones the clocks [clock, end) of c that are held here.
-func applyDeleteRange(tx *Tx, c ClientID, clock, end uint64) {
+// applyDeleteRange tombstones the clocks [clock, end) of c that are held here
+// and returns the tail it could not reach. Holding the whole range back would
+// delay text that was perfectly deletable.
+func applyDeleteRange(tx *Tx, c ClientID, clock, end uint64) *idRange {
 	st := &tx.doc.store
-	stop := min(end, st.stateOf(c))
-	if clock >= stop {
-		return
+	state := st.stateOf(c)
+	if clock >= state {
+		return &idRange{clock, end - clock}
 	}
+	stop := min(end, state)
 	// split at both range boundaries before marking, or a run only partly
 	// covered takes visible text down with it
 	for it := st.cleanStart(ID{Client: c, Clock: clock}); it != nil && it.id.Clock < stop; {
@@ -139,4 +148,8 @@ func applyDeleteRange(tx *Tx, c ClientID, clock, end uint64) {
 		// splitAt reallocates the client's slice, so ask the store again
 		it = st.nextBlock(it)
 	}
+	if end > state {
+		return &idRange{state, end - state}
+	}
+	return nil
 }

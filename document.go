@@ -11,9 +11,11 @@ type Doc struct {
 	roots    map[string]*Text
 	store    structStore
 
-	// structs whose anchors this replica does not hold yet
+	// structs whose anchors this replica does not hold yet, and delete ranges
+	// naming structs it does not hold either
 	pending      map[ClientID][]decoded
 	pendingCount int
+	pendingDS    deleteSet
 
 	tx     Tx // the single reusable transaction value
 	txOpen bool
@@ -48,9 +50,10 @@ func NewDocWith(opts Options) *Doc {
 		c = newClientID()
 	}
 	return &Doc{
-		clientID: c,
-		roots:    make(map[string]*Text),
-		pending:  make(map[ClientID][]decoded),
+		clientID:  c,
+		roots:     make(map[string]*Text),
+		pending:   make(map[ClientID][]decoded),
+		pendingDS: deleteSet{},
 	}
 }
 
@@ -97,7 +100,11 @@ func (d *Doc) EncodeStateAsUpdate(since StateVector) Update {
 	defer d.mu.Unlock()
 	// the delete set goes out whole whatever since says: tombstoning advances
 	// no clock, so a filtered one resurrects deleted text on the receiver
-	return encodeCanonical(structsSince(&d.store, since.m), deleteSetFromStore(&d.store))
+	ds := deleteSetFromStore(&d.store)
+	// the buffered ranges are real deletions someone performed, and the peer
+	// asking may well hold the structs they name
+	ds.union(d.pendingDS)
+	return encodeCanonical(structsSince(&d.store, since.m), ds)
 }
 
 // ApplyUpdate integrates u, which may repeat what this replica already holds.
@@ -117,8 +124,9 @@ func (d *Doc) ApplyUpdate(u Update, origin any) error {
 	d.mu.Lock()
 	tx := d.begin(origin, false)
 	leftover, rejected := drive(tx, structs)
-	applyDeleteSet(tx, ds)
+	unapplied := applyDeleteSet(tx, ds)
 	d.bufferStructs(leftover)
+	d.bufferDeleteSet(tx, unapplied)
 	d.commit(tx)
 	if rejected {
 		return badUpdate(0, "struct.originOrder")

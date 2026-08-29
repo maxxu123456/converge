@@ -131,3 +131,33 @@ func TestDeleteRecordsOneRangePerTransaction(t *testing.T) {
 		t.Errorf("an insert-only transaction recorded %v", d.tx.deleted)
 	}
 }
+
+// deleteOnly returns a's delete set as an update carrying no structs, the shape
+// a peer already caught up on structs receives.
+func deleteOnly(a *Doc, c ClientID, from uint64) Update {
+	return a.EncodeStateAsUpdate(StateVector{m: map[ClientID]uint64{c: from}})
+}
+
+func TestDeleteRangeAppliesWhatItCanAndBuffersTheTail(t *testing.T) {
+	a := NewDocWith(Options{ClientID: 1})
+	ta := a.Text("body")
+	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 0, "abc") })
+
+	b := NewDocWith(Options{ClientID: 2})
+	sendState(t, a, b)
+
+	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 3, "def") })
+	a.Transact(nil, func(tx *Tx) { tx.Delete(ta, 1, 4) })
+	// clocks 1 to 4, of which the receiver holds 1 and 2
+	if err := b.ApplyUpdate(deleteOnly(a, 1, 6), "peer"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	validate(t, b)
+	if got := b.Text("body").String(); got != "a" {
+		t.Fatalf("the deletable prefix left %q, want %q", got, "a")
+	}
+	want := []idRange{{3, 2}}
+	if got := b.pendingDS[1]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buffered %v, want %v", got, want)
+	}
+}
