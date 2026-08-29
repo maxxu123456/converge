@@ -217,6 +217,55 @@ func readOriginID(r *wire.Reader, c ClientID, clock uint64, field string) (ID, e
 	return ID{Client: oc, Clock: oclock}, nil
 }
 
+func badPosition(off int, field string) *DecodeError {
+	return decodeErr(off, field, ErrMalformedPosition)
+}
+
+// readPosition parses a position blob whole. Trailing bytes are a failure, so
+// one blob never decodes two ways.
+func readPosition(b []byte) (Position, error) {
+	r := &wire.Reader{B: b}
+	if err := readHeader(r, kindPosition, ErrMalformedPosition); err != nil {
+		return Position{}, err
+	}
+	off := r.I
+	name, err := r.String()
+	if err != nil || name == "" || len(name) > 255 || !utf8.ValidString(name) {
+		return Position{}, badPosition(off, "position.name")
+	}
+	off = r.I
+	kind, err := r.Byte()
+	if err != nil || kind > byte(posAnchored) {
+		return Position{}, badPosition(off, "position.kind")
+	}
+	off = r.I
+	assoc, err := r.Byte()
+	if err != nil || assoc > 1 {
+		return Position{}, badPosition(off, "position.assoc")
+	}
+	p := Position{name: name, kind: posKind(kind)}
+	if assoc == 1 {
+		p.assoc = AssocBefore
+	}
+	if p.kind == posAnchored {
+		off = r.I
+		client, err := r.Uvarint()
+		if err != nil || client == 0 {
+			return Position{}, badPosition(off, "position.client")
+		}
+		off = r.I
+		clock, err := r.Uvarint()
+		if err != nil {
+			return Position{}, badPosition(off, "position.clock")
+		}
+		p.item = ID{Client: ClientID(client), Clock: clock}
+	}
+	if r.Remaining() != 0 {
+		return Position{}, badPosition(r.I, "position.trailing")
+	}
+	return p, nil
+}
+
 func readDeleteSet(r *wire.Reader) (deleteSet, error) {
 	off := r.I
 	n, err := r.Uvarint()

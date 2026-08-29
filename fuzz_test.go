@@ -165,3 +165,62 @@ func FuzzConverge(f *testing.F) {
 		w.converged()
 	})
 }
+
+// FuzzPosition drives two replicas from the script, then asserts a position
+// taken on one survives the wire and lands inside both documents.
+func FuzzPosition(f *testing.F) {
+	f.Add([]byte{0, 3, 2, 5, 6, 1, 7, 2}, 2, int8(0))
+	f.Add([]byte{1, 4, 0, 0, 5, 9, 4, 3, 6, 2}, 0, int8(-1))
+	f.Add([]byte{2, 8, 3, 1, 7, 7, 1, 6}, 5, int8(3))
+	f.Fuzz(func(t *testing.T, script []byte, index int, assoc int8) {
+		a := NewDocWith(Options{ClientID: 1})
+		b := NewDocWith(Options{ClientID: 2})
+		docs := [2]*Doc{a, b}
+		// hoisted: Doc.Text takes the lock a transaction already holds
+		texts := [2]*Text{a.Text("body"), b.Text("body")}
+		for i := 0; i+1 < len(script) && i < 64; i += 2 {
+			k := int(script[i] & 1)
+			d, text, arg := docs[k], texts[k], int(script[i+1])
+			switch int(script[i]>>1) % 4 {
+			case 0, 1:
+				d.Transact(nil, func(tx *Tx) {
+					tx.Insert(text, arg%(tx.Len(text)+1), simAlphabet[arg%len(simAlphabet)])
+				})
+			case 2:
+				d.Transact(nil, func(tx *Tx) {
+					if n := tx.Len(text); n > 0 {
+						at := arg % n
+						tx.Delete(text, at, 1+arg%(n-at))
+					}
+				})
+			default:
+				sendState(t, a, b)
+				sendState(t, b, a)
+			}
+		}
+
+		p := texts[0].Position(index, Assoc(assoc))
+		raw, err := p.MarshalBinary()
+		if err != nil {
+			t.Fatalf("%+v did not marshal: %v", p, err)
+		}
+		var got Position
+		if err := got.UnmarshalBinary(raw); err != nil {
+			t.Fatalf("%+v encoded to %x, which does not decode: %v", p, raw, err)
+		}
+		if got != p {
+			t.Fatalf("%+v round tripped to %+v", p, got)
+		}
+		for i, d := range docs {
+			text, at, ok := d.Resolve(got)
+			if !ok {
+				continue
+			}
+			if at < 0 || at > text.Len() {
+				t.Fatalf("replica %d resolved to index %d, outside [0, %d]", i, at, text.Len())
+			}
+		}
+		validate(t, a)
+		validate(t, b)
+	})
+}

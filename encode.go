@@ -234,6 +234,23 @@ func writeStruct(w *wire.Writer, s decoded) {
 	w.String(s.content)
 }
 
+// writePosition emits the whole position blob. A kind other than posAnchored
+// carries no id at all.
+func writePosition(w *wire.Writer, p Position) {
+	writeHeader(w, kindPosition)
+	w.String(p.name)
+	w.Byte(byte(p.kind))
+	if p.assoc == AssocBefore {
+		w.Byte(1)
+	} else {
+		w.Byte(0)
+	}
+	if p.kind == posAnchored {
+		w.Uvarint(uint64(p.item.Client))
+		w.Uvarint(p.item.Clock)
+	}
+}
+
 // writeDeleteSet emits ds, which must already be normalized. The first range of
 // a client carries an absolute clock, later ones the gap since the last end.
 func writeDeleteSet(w *wire.Writer, ds deleteSet) {

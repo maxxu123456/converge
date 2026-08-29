@@ -1,5 +1,7 @@
 package converge
 
+import "github.com/maxxu123456/converge/internal/wire"
+
 // Assoc says which side of a position a cursor sticks to.
 type Assoc int8
 
@@ -38,6 +40,24 @@ func (p Position) Assoc() Assoc { return p.assoc }
 
 // TextName returns the root Text name p refers to.
 func (p Position) TextName() string { return p.name }
+
+// MarshalBinary encodes p and satisfies encoding.BinaryMarshaler. It never
+// fails, but the zero Position has no name and does not decode again.
+func (p Position) MarshalBinary() ([]byte, error) {
+	w := &wire.Writer{B: make([]byte, 0, 20)}
+	writePosition(w, p)
+	return w.B, nil
+}
+
+// UnmarshalBinary decodes bytes produced by MarshalBinary.
+func (p *Position) UnmarshalBinary(b []byte) error {
+	q, err := readPosition(b)
+	if err != nil {
+		return err
+	}
+	*p = q
+	return nil
+}
 
 // anchorBase returns how far into it p's anchor sits, in visible runes.
 func (p Position) anchorBase(it *item) int {
