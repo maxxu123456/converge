@@ -141,3 +141,27 @@ func inputsAgree(us []Update) bool {
 	}
 	return true
 }
+
+// FuzzConverge reads the fuzzer's bytes as a program: the first byte sizes the
+// mesh and the rest choose who edits, who delivers and who drops out. Coverage
+// guidance reaches the conflict scan far more often than random choices do.
+func FuzzConverge(f *testing.F) {
+	f.Add([]byte{0, 3, 1, 8, 6, 0, 0, 7, 11, 2, 3, 1, 6, 6, 5})
+	f.Add([]byte{2, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 9, 6, 3})
+	f.Add([]byte{3, 11, 0, 0, 4, 2, 9, 1, 11, 1, 6, 0, 10, 3, 3, 8})
+	f.Fuzz(func(t *testing.T, script []byte) {
+		if len(script) < 2 {
+			return
+		}
+		if len(script) > 512 {
+			script = script[:512]
+		}
+		src := &scriptSource{b: script[1:]}
+		w := newWorld(t, "script", src, 2+int(script[0])%4, []string{"body"})
+		for !src.spent() {
+			w.step()
+		}
+		w.settle()
+		w.converged()
+	})
+}
