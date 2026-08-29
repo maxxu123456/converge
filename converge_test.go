@@ -616,3 +616,51 @@ func TestStatsCountsTombstonesAndBytes(t *testing.T) {
 	}
 	Validate(t, d)
 }
+
+// chainOfThree returns three replicas that each typed one rune after the one
+// before it, so an update from the last two is blocked on the first.
+func chainOfThree(t *testing.T) (*Doc, *Doc, *Doc) {
+	t.Helper()
+	a := NewDocWith(Options{ClientID: 1})
+	b := NewDocWith(Options{ClientID: 2})
+	c := NewDocWith(Options{ClientID: 3})
+	a.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 0, "a") })
+	sendState(t, a, b)
+	b.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 1, "b") })
+	sendState(t, b, c)
+	c.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 2, "c") })
+	return a, b, c
+}
+
+func TestPendingOverflowDoesNotEvict(t *testing.T) {
+	a, b, c := chainOfThree(t)
+	tail, err := MergeUpdates(
+		b.EncodeStateAsUpdate(a.StateVector()),
+		c.EncodeStateAsUpdate(b.StateVector()),
+	)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	d := NewDocWith(Options{ClientID: 4, MaxPendingStructs: 1})
+	if err := d.ApplyUpdate(tail, "peer"); !errors.Is(err, ErrPendingOverflow) {
+		t.Fatalf("applying two blocked structs under a cap of one gave %v", err)
+	}
+	Validate(t, d)
+	if d.pendingCount != 1 {
+		t.Fatalf("the buffer holds %d structs, want the one that fit", d.pendingCount)
+	}
+	if got := d.Text("body").String(); got != "" {
+		t.Fatalf("a blocked update left %q behind", got)
+	}
+
+	// nothing was evicted, so a fresh handshake is all the recovery there is
+	sendState(t, c, d)
+	Validate(t, d)
+	if got := d.Text("body").String(); got != "abc" {
+		t.Fatalf("after the resync %q, want %q", got, "abc")
+	}
+	if d.pendingCount != 0 {
+		t.Fatalf("%d structs are still buffered after the resync", d.pendingCount)
+	}
+}

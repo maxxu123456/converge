@@ -6,18 +6,27 @@ import (
 )
 
 // bufferStructs parks the structs a transaction could not place, so a later
-// arrival unblocks them instead of the text being lost.
-func (d *Doc) bufferStructs(leftover map[ClientID][]decoded) {
+// arrival unblocks them instead of the text being lost. A full buffer discards
+// the rest and says so: nothing already buffered is ever evicted.
+func (d *Doc) bufferStructs(leftover map[ClientID][]decoded) (overflow bool) {
 	for _, c := range sortedClients(leftover) {
 		for _, s := range leftover[c] {
 			if s.endClock() <= d.store.stateOf(c) {
 				continue // already integrated, so there is nothing to wait for
 			}
+			if d.pendingCount >= d.maxPending {
+				overflow = true
+				break
+			}
 			d.pending[c] = append(d.pending[c], s)
 			d.pendingCount++
 		}
 		d.tidyPending(c)
+		if overflow {
+			return true
+		}
 	}
+	return false
 }
 
 // tidyPending keeps a client's buffer clock ascending and free of the repeats a
@@ -84,12 +93,26 @@ func drainPending(tx *Tx) {
 
 // bufferDeleteSet parks the delete ranges naming structs this replica does not
 // hold, then retries the backlog in case this update brought what it needed.
-func (d *Doc) bufferDeleteSet(tx *Tx, unapplied deleteSet) {
+func (d *Doc) bufferDeleteSet(tx *Tx, unapplied deleteSet) (overflow bool) {
 	if unapplied.empty() {
-		return
+		return false
+	}
+	// the union may coalesce, but refusing on the pessimistic count keeps the
+	// bound simple and errs towards asking for a resync
+	if rangeCount(d.pendingDS)+rangeCount(unapplied) > d.maxPending {
+		return true
 	}
 	d.pendingDS.union(unapplied)
 	retryPendingDeleteSet(tx)
+	return false
+}
+
+func rangeCount(ds deleteSet) int {
+	n := 0
+	for _, rs := range ds {
+		n += len(rs)
+	}
+	return n
 }
 
 // retryPendingDeleteSet reapplies every buffered range and keeps whatever is

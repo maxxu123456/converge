@@ -7,9 +7,10 @@ import "sync"
 type Doc struct {
 	mu sync.Mutex // guards everything below, never held across io or user code
 
-	clientID ClientID
-	roots    map[string]*Text
-	store    structStore
+	clientID   ClientID
+	maxPending int
+	roots      map[string]*Text
+	store      structStore
 
 	// structs whose anchors this replica does not hold yet, and delete ranges
 	// naming structs it does not hold either
@@ -38,7 +39,14 @@ type Options struct {
 	// ClientID pins this replica's identity instead of minting one from
 	// crypto/rand. Only safe when the caller guarantees global uniqueness.
 	ClientID ClientID
+
+	// MaxPendingStructs caps how many causally blocked structs may be
+	// buffered. Zero means DefaultMaxPendingStructs.
+	MaxPendingStructs int
 }
+
+// DefaultMaxPendingStructs is the default value of Options.MaxPendingStructs.
+const DefaultMaxPendingStructs = 1 << 16
 
 // NewDoc returns an empty Doc with a fresh random ClientID.
 func NewDoc() *Doc { return NewDocWith(Options{}) }
@@ -49,11 +57,16 @@ func NewDocWith(opts Options) *Doc {
 	if c == 0 {
 		c = newClientID()
 	}
+	maxPending := opts.MaxPendingStructs
+	if maxPending == 0 {
+		maxPending = DefaultMaxPendingStructs
+	}
 	return &Doc{
-		clientID:  c,
-		roots:     make(map[string]*Text),
-		pending:   make(map[ClientID][]decoded),
-		pendingDS: deleteSet{},
+		clientID:   c,
+		maxPending: maxPending,
+		roots:      make(map[string]*Text),
+		pending:    make(map[ClientID][]decoded),
+		pendingDS:  deleteSet{},
 	}
 }
 
@@ -109,6 +122,8 @@ func (d *Doc) EncodeStateAsUpdate(since StateVector) Update {
 
 // ApplyUpdate integrates u, which may repeat what this replica already holds.
 // A struct whose anchors are missing is buffered and retried, never dropped.
+// ErrPendingOverflow means the ready part of u was applied and the blocked
+// remainder was discarded because the buffer is full.
 func (d *Doc) ApplyUpdate(u Update, origin any) error {
 	if len(u) == 0 {
 		return nil
@@ -125,10 +140,15 @@ func (d *Doc) ApplyUpdate(u Update, origin any) error {
 	tx := d.begin(origin, false)
 	leftover, rejected := drive(tx, structs)
 	unapplied := applyDeleteSet(tx, ds)
-	d.bufferStructs(leftover)
-	d.bufferDeleteSet(tx, unapplied)
+	overflow := d.bufferStructs(leftover)
+	if d.bufferDeleteSet(tx, unapplied) {
+		overflow = true
+	}
 	d.commit(tx)
-	if rejected {
+	switch {
+	case overflow:
+		return ErrPendingOverflow
+	case rejected:
 		return badUpdate(0, "struct.originOrder")
 	}
 	return nil
