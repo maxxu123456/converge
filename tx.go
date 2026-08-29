@@ -54,6 +54,7 @@ func (d *Doc) commit(tx *Tx) {
 	// and the delete set with it: an update that carries the text a buffered
 	// range names buffers nothing itself, so nothing else would ever retry it
 	retryPendingDeleteSet(tx)
+	d.recomputeMissing()
 	tx.deleted.normalize()
 	changed := !equalClocks(tx.before, d.store.stateVector()) || !tx.deleted.empty()
 	tx.closed = true

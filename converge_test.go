@@ -664,3 +664,71 @@ func TestPendingOverflowDoesNotEvict(t *testing.T) {
 		t.Fatalf("%d structs are still buffered after the resync", d.pendingCount)
 	}
 }
+
+func TestPendingNamesTheClockItWaitsFor(t *testing.T) {
+	_, b, c := chainOfThree(t)
+	// only the last rune, which hangs off a rune of b this replica lacks
+	d := NewDocWith(Options{ClientID: 4})
+	if err := d.ApplyUpdate(c.EncodeStateAsUpdate(b.StateVector()), "peer"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	Validate(t, d)
+	n, missing := d.Pending()
+	if n != 1 {
+		t.Fatalf("%d structs buffered, want 1", n)
+	}
+	if got := missing.Get(2); got != 1 {
+		t.Fatalf("waiting for client 2 from clock %d, want 1", got)
+	}
+	if got := missing.Get(1); got != 0 {
+		t.Fatalf("client 1 is named at clock %d, but nothing buffered asks for it", got)
+	}
+	if got := d.Stats().PendingStructs; got != n {
+		t.Fatalf("stats say %d pending, Pending says %d", got, n)
+	}
+
+	// the backlog clears itself once what it named arrives
+	sendState(t, b, d)
+	Validate(t, d)
+	if n, missing := d.Pending(); n != 0 || len(missing.Clients()) != 0 {
+		t.Fatalf("still waiting on %d structs %v", n, missing)
+	}
+	if got := d.Text("body").String(); got != "abc" {
+		t.Fatalf("text %q, want %q", got, "abc")
+	}
+}
+
+func TestPendingNamesTheLowestUnblockingClock(t *testing.T) {
+	x := NewDocWith(Options{ClientID: 1})
+	tx0 := x.Text("body")
+	x.Transact(nil, func(tx *Tx) { tx.Insert(tx0, 0, "0123456789") })
+
+	// two replicas type into x's text at different points, so their structs
+	// name two different clocks of the same client
+	early := NewDocWith(Options{ClientID: 2})
+	late := NewDocWith(Options{ClientID: 3})
+	sendState(t, x, early)
+	sendState(t, x, late)
+	early.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 2, "E") })
+	late.Transact(nil, func(tx *Tx) { tx.Insert(tx.Text("body"), 9, "L") })
+
+	d := NewDocWith(Options{ClientID: 4})
+	for _, u := range []Update{
+		late.EncodeStateAsUpdate(x.StateVector()),
+		early.EncodeStateAsUpdate(x.StateVector()),
+	} {
+		if err := d.ApplyUpdate(u, "peer"); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+	}
+	Validate(t, d)
+	n, missing := d.Pending()
+	if n != 2 {
+		t.Fatalf("%d structs buffered, want 2", n)
+	}
+	// the earlier struct needs clocks 1 and 2 of client 1, the later one 8 and
+	// 9, and the lowest is the one a peer is most likely to still hold
+	if got := missing.Get(1); got != 2 {
+		t.Fatalf("waiting for client 1 from clock %d, want 2", got)
+	}
+}

@@ -29,6 +29,9 @@ func (d *Doc) checkInvariants() error {
 	if err := checkCanonicalDeleteSet(deleteSetFromStore(&d.store)); err != nil {
 		return err
 	}
+	if err := d.checkPending(); err != nil {
+		return err
+	}
 	return d.checkEncoding()
 }
 
@@ -157,6 +160,47 @@ func checkCanonicalDeleteSet(ds deleteSet) error {
 			if i > 0 && r.clock <= rs[i-1].end() {
 				return fmt.Errorf("client %s has a range at clock %d that touches the one before it", c, r.clock)
 			}
+		}
+	}
+	return nil
+}
+
+// checkPending asserts the causal backlog is ordered and counted, that nothing
+// in it is already integrated, and that missing names what would unblock it.
+func (d *Doc) checkPending() error {
+	n := 0
+	for c, ss := range d.pending {
+		for i, s := range ss {
+			switch {
+			case s.client != c:
+				return fmt.Errorf("client %s buffers a struct of client %s", c, s.client)
+			case i > 0 && s.clock < ss[i-1].clock:
+				return fmt.Errorf("client %s buffers clock %d after clock %d", c, s.clock, ss[i-1].clock)
+			case s.endClock() <= d.store.stateOf(c):
+				return fmt.Errorf("client %s buffers clock %d, which the store already holds", c, s.clock)
+			}
+			n++
+		}
+	}
+	if n != d.pendingCount {
+		return fmt.Errorf("the buffer holds %d structs but the count says %d", n, d.pendingCount)
+	}
+	for c, rs := range d.pendingDS {
+		for _, r := range rs {
+			if r.clock < d.store.stateOf(c) {
+				return fmt.Errorf("client %s buffers a delete at clock %d, below the %d it holds",
+					c, r.clock, d.store.stateOf(c))
+			}
+		}
+	}
+	want := d.missingClocks()
+	if len(want) != len(d.missing) {
+		return fmt.Errorf("missing names %d clients, the buffer blocks on %d", len(d.missing), len(want))
+	}
+	for c, clock := range want {
+		if d.missing[c] != clock {
+			return fmt.Errorf("missing says client %s from clock %d, the buffer needs %d",
+				c, d.missing[c], clock)
 		}
 	}
 	return nil

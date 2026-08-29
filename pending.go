@@ -44,6 +44,42 @@ func (d *Doc) tidyPending(c ClientID) {
 	d.pending[c] = kept
 }
 
+// missingClocks names, per blocked client, the LOWEST clock that would unblock
+// anything, because that is the one a peer is most likely to still be able to
+// supply.
+func (d *Doc) missingClocks() map[ClientID]uint64 {
+	if d.pendingCount == 0 && d.pendingDS.empty() {
+		return nil
+	}
+	m := make(map[ClientID]uint64)
+	lower := func(c ClientID, clock uint64) {
+		if cur, named := m[c]; !named || clock < cur {
+			m[c] = clock
+		}
+	}
+	for c, ss := range d.pending {
+		for _, s := range ss {
+			if s.clock > d.store.stateOf(c) {
+				lower(c, s.clock) // a hole in c's own log
+				continue
+			}
+			for _, a := range [2]ID{s.origin, s.rightOrigin} {
+				if !a.IsZero() && d.store.stateOf(a.Client) <= a.Clock {
+					lower(a.Client, a.Clock+1)
+				}
+			}
+		}
+	}
+	for c, rs := range d.pendingDS {
+		for _, r := range rs {
+			lower(c, r.clock+1)
+		}
+	}
+	return m
+}
+
+func (d *Doc) recomputeMissing() { d.missing = d.missingClocks() }
+
 // drainPending retries the buffered structs until a round integrates nothing.
 // It runs inside the transaction that unblocked them, so a whole cascade still
 // emits one delta per Text and one relayed update.

@@ -1,6 +1,9 @@
 package converge
 
-import "sync"
+import (
+	"maps"
+	"sync"
+)
 
 // Doc is a CRDT document: named Text values sharing one replica identity and
 // one causal history. Safe for concurrent use, but never copy one.
@@ -12,11 +15,12 @@ type Doc struct {
 	roots      map[string]*Text
 	store      structStore
 
-	// structs whose anchors this replica does not hold yet, and delete ranges
-	// naming structs it does not hold either
+	// structs whose anchors this replica does not hold yet, delete ranges
+	// naming structs it does not hold either, and what it is waiting for
 	pending      map[ClientID][]decoded
 	pendingCount int
 	pendingDS    deleteSet
+	missing      map[ClientID]uint64
 
 	tx     Tx // the single reusable transaction value
 	txOpen bool
@@ -152,6 +156,15 @@ func (d *Doc) ApplyUpdate(u Update, origin any) error {
 		return badUpdate(0, "struct.originOrder")
 	}
 	return nil
+}
+
+// Pending reports the causal backlog: n buffered structs, and per client the
+// lowest clock this replica has to reach before any of them can be integrated.
+// An n that does not fall back to zero means sending a fresh sync on every link.
+func (d *Doc) Pending() (n int, missing StateVector) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.pendingCount, StateVector{m: maps.Clone(d.missing)}
 }
 
 // OnUpdate registers fn, called once per committed transaction that changed the
