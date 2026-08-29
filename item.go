@@ -45,6 +45,12 @@ func tryMergeLeft(st *structStore, r *item) bool {
 	// before l grows: the blocks are searched by clock, and a grown l would
 	// shadow r and leave the orphan behind
 	st.remove(r)
+	lRune, lU16 := 0, 0
+	if !l.deleted {
+		lRune, lU16 = int(l.runeLen), int(l.u16Len)
+	}
+	// a marker on r follows its runes into l, which starts that much earlier
+	repointMarker(r, l, -lRune, -lU16)
 	l.content += r.content
 	l.runeLen += r.runeLen
 	l.u16Len += r.u16Len

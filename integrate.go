@@ -203,6 +203,10 @@ func integrate(tx *Tx, it *item) error {
 		parent.byteLen += len(it.content)
 		parent.u16Len += int(it.u16Len)
 	}
+	// the cache is a run out of date, and the new run is where typing continues
+	r, u := visibleIndexOf(it)
+	parent.clearMarkers()
+	parent.installMarker(it, r, u)
 	tx.merge = append(tx.merge, it)
 	return nil
 }

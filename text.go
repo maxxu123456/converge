@@ -15,6 +15,8 @@ type Text struct {
 	runeLen int   // visible runes
 	byteLen int   // visible UTF-8 bytes
 	u16Len  int   // visible UTF-16 code units
+	markers [numMarkers]marker
+	stamp   uint64 // the markers' LRU clock
 	obs     []*observer[func(Event)]
 }
 
@@ -118,8 +120,8 @@ func (t *Text) visible() string {
 // visibleSlice returns the visible runes in [start, end). The caller holds the lock.
 func (t *Text) visibleSlice(start, end int) string {
 	var b strings.Builder
-	n := 0
-	for it := t.start; it != nil && n < end; it = it.right {
+	it, n, _ := t.seek(start)
+	for ; it != nil && n < end; it = it.right {
 		if it.deleted {
 			continue
 		}
@@ -143,21 +145,12 @@ func (t *Text) visibleSlice(start, end int) string {
 // utf16Index returns the UTF-16 offset of visible rune index. The caller holds
 // the lock.
 func (t *Text) utf16Index(index int) int {
-	r, u := 0, 0
-	for it := t.start; it != nil && r < index; it = it.right {
-		if it.deleted {
-			continue
-		}
-		l := int(it.runeLen)
-		if r+l <= index {
-			r += l
-			u += int(it.u16Len)
-			continue
-		}
-		off := utf8ByteOffset(it.content, uint32(index-r))
-		return u + int(utf16LenOf(it.content[:off]))
+	it, r, u := t.seek(index)
+	if it == nil {
+		return t.u16Len
 	}
-	return u
+	off := utf8ByteOffset(it.content, uint32(index-r))
+	return u + int(utf16LenOf(it.content[:off]))
 }
 
 // runeIndex returns the rune index of a UTF-16 offset. The caller holds the lock.
@@ -168,45 +161,103 @@ func (t *Text) runeIndex(u16 int) int {
 	if u16 >= t.u16Len {
 		return t.runeLen
 	}
-	r, u := 0, 0
-	for it := t.start; it != nil; it = it.right {
-		if it.deleted {
-			continue
+	it, r, u := t.seekU16(u16)
+	if it == nil {
+		return t.runeLen
+	}
+	for _, c := range it.content {
+		w := 1
+		if c > 0xFFFF {
+			w = 2
 		}
-		if u+int(it.u16Len) <= u16 {
-			r += int(it.runeLen)
-			u += int(it.u16Len)
-			continue
+		if u+w > u16 {
+			break // an offset inside a surrogate pair rounds down
 		}
-		for _, c := range it.content {
-			w := 1
-			if c > 0xFFFF {
-				w = 2
-			}
-			if u+w > u16 {
-				return r // an offset inside a surrogate pair rounds down
-			}
-			r++
-			u += w
-		}
+		r++
+		u += w
 	}
 	return r
+}
+
+// nearest returns the cached waypoint closest to want, measured in UTF-16 code
+// units when byU16 is set, or the head of the list.
+func (t *Text) nearest(want int, byU16 bool) (it *item, r, u int) {
+	it, best := t.start, want
+	for i := range t.markers {
+		m := &t.markers[i]
+		if m.stamp == 0 {
+			continue
+		}
+		at := m.rune
+		if byU16 {
+			at = m.u16
+		}
+		d := at - want
+		if d < 0 {
+			d = -d
+		}
+		if d < best {
+			it, r, u, best = m.it, m.rune, m.u16, d
+		}
+	}
+	return it, r, u
+}
+
+// seek returns the item holding visible rune index, with the offsets of that
+// item's first rune. it is nil once index is at or past the end.
+func (t *Text) seek(index int) (*item, int, int) {
+	it, r, u := t.nearest(index, false)
+	for it != nil && r > index {
+		it = it.left
+		if it != nil && !it.deleted {
+			r -= int(it.runeLen)
+			u -= int(it.u16Len)
+		}
+	}
+	for it != nil && (it.deleted || r+int(it.runeLen) <= index) {
+		if !it.deleted {
+			r += int(it.runeLen)
+			u += int(it.u16Len)
+		}
+		it = it.right
+	}
+	if it != nil {
+		t.installMarker(it, r, u)
+	}
+	return it, r, u
+}
+
+// seekU16 is seek keyed on a UTF-16 offset instead of a rune index.
+func (t *Text) seekU16(off int) (*item, int, int) {
+	it, r, u := t.nearest(off, true)
+	for it != nil && u > off {
+		it = it.left
+		if it != nil && !it.deleted {
+			r -= int(it.runeLen)
+			u -= int(it.u16Len)
+		}
+	}
+	for it != nil && (it.deleted || u+int(it.u16Len) <= off) {
+		if !it.deleted {
+			r += int(it.runeLen)
+			u += int(it.u16Len)
+		}
+		it = it.right
+	}
+	if it != nil {
+		t.installMarker(it, r, u)
+	}
+	return it, r, u
 }
 
 // findVisible returns the item holding visible rune index and the rune offset
 // of index within it. index must be below t.runeLen.
 func (t *Text) findVisible(index int) (*item, int) {
-	n := 0
-	for it := t.start; it != nil; it = it.right {
-		if it.deleted {
-			continue
-		}
-		if index < n+int(it.runeLen) {
-			return it, index - n
-		}
-		n += int(it.runeLen)
+	it, r, _ := t.seek(index)
+	if it == nil {
+		return nil, 0
 	}
-	return nil, 0
+	return it, index - r
 }
 
 // findInsertPos returns the neighbours a new item inserted before visible rune

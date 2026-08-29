@@ -105,6 +105,7 @@ func deleteItem(tx *Tx, it *item) {
 	}
 	it.deleted = true
 	t := it.parent
+	t.clearMarkers()
 	t.runeLen -= int(it.runeLen)
 	t.byteLen -= len(it.content)
 	t.u16Len -= int(it.u16Len)
