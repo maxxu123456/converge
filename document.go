@@ -102,6 +102,36 @@ func (d *Doc) text(name string) *Text {
 	return t
 }
 
+// Resolve returns the Text p names and the rune index it points at now. A
+// false ok means the anchored rune has not arrived, so hide that cursor and
+// retry after the next update.
+func (d *Doc) Resolve(p Position) (t *Text, index int, ok bool) {
+	if !p.Valid() {
+		return nil, 0, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	t = d.roots[p.name]
+	if t == nil {
+		return nil, 0, false // this replica has never seen that root
+	}
+	switch p.kind {
+	case posStart:
+		return t, 0, true
+	case posEnd:
+		return t, t.runeLen, true
+	}
+	if d.store.stateOf(p.item.Client) <= p.item.Clock {
+		return t, 0, false // guessing here is how a cursor jumps to the wrong rune
+	}
+	it := d.store.get(p.item) // the run holding that clock, never a split
+	if it.parent != t {
+		return t, 0, false
+	}
+	r, _ := visibleIndexOf(it)
+	return t, r + p.anchorBase(it), true
+}
+
 // StateVector returns what this replica has seen: per client, the next clock
 // it expects. The result is a value safe to hold and to send.
 func (d *Doc) StateVector() StateVector {

@@ -38,3 +38,17 @@ func (p Position) Assoc() Assoc { return p.assoc }
 
 // TextName returns the root Text name p refers to.
 func (p Position) TextName() string { return p.name }
+
+// anchorBase returns how far into it p's anchor sits, in visible runes.
+func (p Position) anchorBase(it *item) int {
+	if it.deleted {
+		// a deleted anchor collapses to where its text was, with no +1, which
+		// is what keeps a remote cursor still when the rune under it goes
+		return 0
+	}
+	diff := int(p.item.Clock - it.id.Clock)
+	if p.assoc == AssocBefore {
+		return diff + 1
+	}
+	return diff
+}
