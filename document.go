@@ -141,7 +141,7 @@ func (d *Doc) ApplyUpdate(u Update, origin any) error {
 	leftover, rejected := drive(tx, structs)
 	unapplied := applyDeleteSet(tx, ds)
 	overflow := d.bufferStructs(leftover)
-	if d.bufferDeleteSet(tx, unapplied) {
+	if d.bufferDeleteSet(unapplied) {
 		overflow = true
 	}
 	d.commit(tx)

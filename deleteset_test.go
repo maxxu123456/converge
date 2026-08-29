@@ -161,3 +161,56 @@ func TestDeleteRangeAppliesWhatItCanAndBuffersTheTail(t *testing.T) {
 		t.Fatalf("buffered %v, want %v", got, want)
 	}
 }
+
+func TestDeleteBeforeInsertIsBuffered(t *testing.T) {
+	a := NewDocWith(Options{ClientID: 1})
+	ta := a.Text("body")
+	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 0, "hello world") })
+	a.Transact(nil, func(tx *Tx) { tx.Delete(ta, 5, 6) })
+
+	b := NewDocWith(Options{ClientID: 2})
+	if err := b.ApplyUpdate(deleteOnly(a, 1, 11), "peer"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	validate(t, b)
+	if b.pendingDS.empty() {
+		t.Fatal("a delete naming text this replica has never seen was dropped")
+	}
+	if got := b.Text("body").String(); got != "" {
+		t.Fatalf("a buffered delete invented %q", got)
+	}
+
+	sendState(t, a, b)
+	validate(t, b)
+	if got := b.Text("body").String(); got != "hello" {
+		t.Fatalf("once the text arrived %q, want %q", got, "hello")
+	}
+	if !b.pendingDS.empty() {
+		t.Fatalf("the applied range is still buffered: %v", b.pendingDS)
+	}
+}
+
+func TestPendingDeleteSetRetriedOnFastPath(t *testing.T) {
+	a := NewDocWith(Options{ClientID: 1})
+	ta := a.Text("body")
+	a.Transact(nil, func(tx *Tx) { tx.Insert(ta, 0, "abcdef") })
+	text := a.EncodeStateAsUpdate(StateVector{}) // structs only, nothing deleted yet
+	a.Transact(nil, func(tx *Tx) { tx.Delete(ta, 2, 2) })
+
+	b := NewDocWith(Options{ClientID: 2})
+	if err := b.ApplyUpdate(deleteOnly(a, 1, 6), "peer"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	// the text arrives in an update that buffers nothing and carries no delete
+	// set of its own, which is the transaction that used to skip the retry
+	if err := b.ApplyUpdate(text, "peer"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	validate(t, b)
+	if got := b.Text("body").String(); got != "abef" {
+		t.Fatalf("text %q, want %q", got, "abef")
+	}
+	if !b.pendingDS.empty() {
+		t.Fatalf("the applied range is still buffered: %v", b.pendingDS)
+	}
+}

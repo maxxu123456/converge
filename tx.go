@@ -51,6 +51,9 @@ func (d *Doc) commit(tx *Tx) {
 	// a local edit is as likely to unblock a buffered struct as a remote one,
 	// so the retry belongs at the end of every transaction
 	drainPending(tx)
+	// and the delete set with it: an update that carries the text a buffered
+	// range names buffers nothing itself, so nothing else would ever retry it
+	retryPendingDeleteSet(tx)
 	tx.deleted.normalize()
 	changed := !equalClocks(tx.before, d.store.stateVector()) || !tx.deleted.empty()
 	tx.closed = true

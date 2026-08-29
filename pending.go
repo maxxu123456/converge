@@ -92,8 +92,8 @@ func drainPending(tx *Tx) {
 }
 
 // bufferDeleteSet parks the delete ranges naming structs this replica does not
-// hold, then retries the backlog in case this update brought what it needed.
-func (d *Doc) bufferDeleteSet(tx *Tx, unapplied deleteSet) (overflow bool) {
+// hold. Commit retries them.
+func (d *Doc) bufferDeleteSet(unapplied deleteSet) (overflow bool) {
 	if unapplied.empty() {
 		return false
 	}
@@ -103,7 +103,6 @@ func (d *Doc) bufferDeleteSet(tx *Tx, unapplied deleteSet) (overflow bool) {
 		return true
 	}
 	d.pendingDS.union(unapplied)
-	retryPendingDeleteSet(tx)
 	return false
 }
 
