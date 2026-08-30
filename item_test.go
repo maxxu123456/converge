@@ -577,6 +577,10 @@ func markerDoc(t *testing.T) (*Doc, *Text) {
 	return d, tb
 }
 
+// clearMarkers empties the cache, so a case starts from a known state. Only
+// the tests need this: the library keeps its markers up to date instead.
+func (t *Text) clearMarkers() { t.markers = [numMarkers]marker{} }
+
 // itemsOf lists t's runs in list order, tombstones included.
 func itemsOf(t *Text) []*item {
 	var its []*item

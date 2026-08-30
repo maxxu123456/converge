@@ -42,9 +42,6 @@ func (t *Text) installMarker(it *item, runeIdx, u16Idx int) {
 	*slot = marker{it: it, rune: runeIdx, u16: u16Idx, stamp: t.stamp}
 }
 
-// clearMarkers forgets everything cached for t.
-func (t *Text) clearMarkers() { t.markers = [numMarkers]marker{} }
-
 // updateMarkerChanges shifts every cached index at or past runeIdx by a change
 // of dRune visible runes, and forgets the ones a delete took with it.
 func (t *Text) updateMarkerChanges(runeIdx, dRune, dU16 int) {
