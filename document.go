@@ -103,8 +103,7 @@ func (d *Doc) text(name string) *Text {
 }
 
 // Resolve returns the Text p names and the rune index it points at now. A
-// false ok means the anchored rune has not arrived, so hide that cursor and
-// retry after the next update.
+// false ok means the anchored rune has not arrived here yet: hide that cursor.
 func (d *Doc) Resolve(p Position) (t *Text, index int, ok bool) {
 	if !p.Valid() {
 		return nil, 0, false

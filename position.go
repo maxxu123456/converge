@@ -22,9 +22,8 @@ const (
 	posAnchored posKind = 2
 )
 
-// Position is a sticky position in a Text. It names a rune rather than an
-// index, so concurrent edits elsewhere do not move it. The zero Position is
-// invalid.
+// Position is a sticky position in a Text: it names a rune, not an index, so
+// concurrent edits elsewhere do not move it. The zero Position is invalid.
 type Position struct {
 	name  string // root Text name, empty only in the zero Position
 	item  ID     // meaningful only when kind is posAnchored

@@ -620,9 +620,8 @@ func peerOf(t *testing.T, d *Doc) (*Doc, *Text) {
 	return e, e.Text("body")
 }
 
-// TestMarkerTransitions walks every way a marker is allowed to move. Anything
-// else touching those fields is silent corruption: a stale index inserts text
-// in the wrong place and raises no error.
+// TestMarkerTransitions walks every way a marker is allowed to move. A stale
+// one inserts text where nobody put it and raises no error at all.
 func TestMarkerTransitions(t *testing.T) {
 	t.Run("a lookup marks where it stopped", func(t *testing.T) {
 		d, tb := markerDoc(t)
