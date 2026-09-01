@@ -94,6 +94,10 @@ func (a *Awareness) Encode(clients ...converge.ClientID) []byte {
 //
 // changed is exactly the set of clients whose state changed, the repaint list.
 // Nothing is applied when err is non-nil.
+//
+// reply is non-nil when update tried to remove this client's still-live local
+// state. It re-announces that state at a higher clock and MUST be broadcast, or
+// the local cursor disappears from every peer.
 func (a *Awareness) Apply(update []byte) (changed []converge.ClientID, reply []byte, err error) {
 	entries, err := decode(update)
 	if err != nil {
@@ -109,10 +113,18 @@ func (a *Awareness) Apply(update []byte) (changed []converge.ClientID, reply []b
 		if seen && e.clock <= known.clock {
 			continue
 		}
+		if e.state == nil && e.client == a.local && known.state != nil {
+			// a peer evicting us while we are still here, typically a server
+			// that saw a socket blip: re-announce rather than disappear
+			a.entries[a.local] = entry{clock: max(known.clock, e.clock) + 1, state: known.state, lastSeen: now}
+			reply = a.encode([]converge.ClientID{a.local})
+			changed = append(changed, a.local)
+			continue
+		}
 		a.entries[e.client] = entry{clock: e.clock, state: e.state, lastSeen: now}
 		changed = append(changed, e.client)
 	}
-	return changed, nil, nil
+	return changed, reply, nil
 }
 
 // Remove announces that the given clients are gone and returns the update to
