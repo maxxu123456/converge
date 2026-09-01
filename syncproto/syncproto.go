@@ -52,12 +52,31 @@ type ByteReader interface {
 	io.ByteReader
 }
 
+// DefaultMaxMessageSize bounds ReadMessage. A peer cannot make you allocate
+// more than this by sending a short length prefix.
+const DefaultMaxMessageSize = 16 << 20
+
 // ErrMalformedMessage is returned when a frame violates the framing rules.
 var ErrMalformedMessage = errors.New("syncproto: malformed message")
 
-// ReadMessage reads one length-prefixed message.
+// ErrMessageTooLarge is returned when a frame declares a payload larger than
+// the limit in force. The payload is not read, and the connection must be
+// closed: the stream is now out of sync.
+var ErrMessageTooLarge = errors.New("syncproto: message too large")
+
+// ReadMessage reads one length-prefixed message, bounded by
+// DefaultMaxMessageSize.
 func ReadMessage(r ByteReader) (Message, error) {
-	n, err := binary.ReadUvarint(r)
+	return ReadMessageLimit(r, DefaultMaxMessageSize)
+}
+
+// ReadMessageLimit reads one length-prefixed message, bounded by max bytes. A
+// max below one means DefaultMaxMessageSize.
+func ReadMessageLimit(r ByteReader, max int) (Message, error) {
+	if max < 1 {
+		max = DefaultMaxMessageSize
+	}
+	n, err := readLen(r, max)
 	if err != nil {
 		return Message{}, err
 	}
@@ -70,6 +89,27 @@ func ReadMessage(r ByteReader) (Message, error) {
 		return Message{}, err
 	}
 	return split(buf)
+}
+
+// readLen decodes the length prefix and refuses an oversized one before a byte
+// of payload has been touched, let alone allocated.
+func readLen(r io.ByteReader, max int) (int, error) {
+	var v uint64
+	for shift := uint(0); shift < 64; shift += 7 {
+		b, err := r.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		v |= uint64(b&0x7f) << shift
+		// the groups already read can only grow v, so refusing here is final
+		if v > uint64(max) {
+			return 0, ErrMessageTooLarge
+		}
+		if b < 0x80 {
+			return int(v), nil
+		}
+	}
+	return 0, ErrMessageTooLarge
 }
 
 // WriteMessage writes one length-prefixed message.
