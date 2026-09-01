@@ -11,6 +11,12 @@ import (
 	"github.com/maxxu123456/converge/internal/wire"
 )
 
+// DefaultTimeout is the recommended inactivity timeout, matching y-protocols.
+const DefaultTimeout = 30 * time.Second
+
+// RecommendedTickInterval is how often the application should call Tick.
+const RecommendedTickInterval = 10 * time.Second
+
 // ErrMalformedAwarenessUpdate is returned when bytes offered to Apply violate
 // the awareness wire format.
 var ErrMalformedAwarenessUpdate = errors.New("awareness: malformed awareness update")
@@ -140,6 +146,30 @@ func (a *Awareness) Remove(clients ...converge.ClientID) (update []byte) {
 		a.entries[c] = entry{clock: a.entries[c].clock + 1, lastSeen: now}
 	}
 	return a.encode(cs)
+}
+
+// Tick is the periodic maintenance call, driven by the application's own ticker
+// (every RecommendedTickInterval against DefaultTimeout).
+//
+// It bumps the local clock and re-announces the local state so peers do not
+// time this client out, and it evicts remote clients not heard from within
+// timeout. Broadcast update, repaint removed. The local client is never
+// evicted, and taking now as a parameter is what makes expiry testable.
+func (a *Awareness) Tick(now time.Time, timeout time.Duration) (update []byte, removed []converge.ClientID) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	known := a.entries[a.local]
+	a.entries[a.local] = entry{clock: known.clock + 1, state: known.state, lastSeen: now}
+	update = a.encode([]converge.ClientID{a.local})
+	for c, e := range a.entries {
+		// evictions are local: every peer times the same client out itself
+		if c != a.local && now.Sub(e.lastSeen) > timeout {
+			delete(a.entries, c)
+			removed = append(removed, c)
+		}
+	}
+	slices.Sort(removed)
+	return update, removed
 }
 
 // known returns every client this replica has an entry for, ascending.

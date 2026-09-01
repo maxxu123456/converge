@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/maxxu123456/converge"
 )
@@ -295,5 +296,97 @@ func TestReturnedSlicesAreOwned(t *testing.T) {
 	encoded[3] = 0xff
 	if got := a.Encode(); !bytes.Equal(got, clone) {
 		t.Errorf("Encode reuses a buffer: % x, want % x", got, clone)
+	}
+}
+
+// The Tick tests offset from a base time, so expiry is exact and nothing sleeps.
+func TestTickEvictsAfterTheTimeout(t *testing.T) {
+	base := time.Now()
+	a := newAwareness(t, 1)
+	apply(t, a, newAwareness(t, 5).SetLocalState([]byte("five")))
+	apply(t, a, newAwareness(t, 3).SetLocalState([]byte("three")))
+	a.SetLocalState([]byte("mine"))
+
+	if _, removed := a.Tick(base.Add(29*time.Second), DefaultTimeout); len(removed) != 0 {
+		t.Fatalf("evicted %v inside the timeout", removed)
+	}
+	_, removed := a.Tick(base.Add(31*time.Second), DefaultTimeout)
+	if !slices.Equal(removed, []converge.ClientID{3, 5}) {
+		t.Errorf("removed %v, want [3 5] ascending", removed)
+	}
+	if got := a.States(); len(got) != 1 {
+		t.Errorf("States after eviction: %v", got)
+	}
+}
+
+func TestTickNeverEvictsTheLocalClient(t *testing.T) {
+	a := newAwareness(t, 1)
+	a.SetLocalState([]byte("mine"))
+	update, removed := a.Tick(time.Now().Add(time.Hour), time.Second)
+	if len(removed) != 0 {
+		t.Errorf("removed %v, want nothing", removed)
+	}
+	if got := a.LocalState(); string(got) != "mine" {
+		t.Errorf("local state %q, want %q", got, "mine")
+	}
+	es, err := decode(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(es) != 1 || es[0].client != 1 || es[0].clock != 2 || string(es[0].state) != "mine" {
+		t.Errorf("heartbeat %+v, want client 1 at clock 2 with the same state", es)
+	}
+}
+
+func TestTickHeartbeatIsAcceptedByAPeer(t *testing.T) {
+	a, b := newAwareness(t, 1), newAwareness(t, 2)
+	apply(t, b, a.SetLocalState([]byte("mine")))
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		update, _ := a.Tick(now, DefaultTimeout)
+		changed, _ := apply(t, b, update)
+		if !slices.Equal(changed, []converge.ClientID{1}) {
+			t.Fatalf("tick %d changed %v, want [1]", i, changed)
+		}
+		if got := b.States()[1]; string(got) != "mine" {
+			t.Errorf("tick %d: b has %q", i, got)
+		}
+	}
+}
+
+func TestEvictedPeerReturnsOnItsNextHeartbeat(t *testing.T) {
+	base := time.Now()
+	a, b := newAwareness(t, 1), newAwareness(t, 2)
+	apply(t, a, b.SetLocalState([]byte("theirs")))
+	if _, removed := a.Tick(base.Add(time.Minute), DefaultTimeout); !slices.Equal(removed, []converge.ClientID{2}) {
+		t.Fatalf("removed %v, want [2]", removed)
+	}
+	// eviction forgets the clock too, so the next heartbeat is a fresh peer
+	update, _ := b.Tick(base, DefaultTimeout)
+	changed, _ := apply(t, a, update)
+	if !slices.Equal(changed, []converge.ClientID{2}) {
+		t.Errorf("changed %v, want [2]", changed)
+	}
+	if got := a.States()[2]; string(got) != "theirs" {
+		t.Errorf("a has %q, want %q", got, "theirs")
+	}
+}
+
+func TestTickOnAnUnannouncedLocalState(t *testing.T) {
+	a := newAwareness(t, 1)
+	update, removed := a.Tick(time.Now(), DefaultTimeout)
+	if len(removed) != 0 {
+		t.Errorf("removed %v", removed)
+	}
+	es, err := decode(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(es) != 1 || es[0].state != nil {
+		t.Errorf("heartbeat %+v, want a removal for the silent local client", es)
+	}
+	// and announcing later still outruns that heartbeat
+	if got := a.SetLocalState([]byte("mine")); !bytes.Equal(got[:6], []byte{0xcf, 0x03, 0x01, 0x01, 0x01, 0x02}) {
+		t.Errorf("first announcement % x, want clock 2", got)
 	}
 }
