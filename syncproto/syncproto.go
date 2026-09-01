@@ -98,6 +98,10 @@ func readLen(r io.ByteReader, max int) (int, error) {
 	for shift := uint(0); shift < 64; shift += 7 {
 		b, err := r.ReadByte()
 		if err != nil {
+			// EOF partway through the prefix is a cut frame, not a clean close
+			if err == io.EOF && shift > 0 {
+				err = io.ErrUnexpectedEOF
+			}
 			return 0, err
 		}
 		v |= uint64(b&0x7f) << shift
