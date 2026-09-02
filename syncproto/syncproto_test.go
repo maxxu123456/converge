@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/maxxu123456/converge"
+	"github.com/maxxu123456/converge/awareness"
 )
 
 const quietFor = 30 * time.Second
@@ -177,6 +178,7 @@ func (l *link) read() {
 // peer is one replica wired up the way the routing loop is meant to be wired.
 type peer struct {
 	doc   *converge.Doc
+	aware *awareness.Awareness
 	track *tracker
 
 	mu    sync.Mutex
@@ -184,7 +186,8 @@ type peer struct {
 }
 
 func newPeer(t *testing.T, tr *tracker) *peer {
-	p := &peer{doc: converge.NewDoc(), track: tr}
+	d := converge.NewDoc()
+	p := &peer{doc: d, aware: awareness.New(d), track: tr}
 	cancel := p.doc.OnUpdate(func(u converge.Update, origin any) {
 		p.broadcast(UpdateMessage(u), origin)
 		if origin == nil {
@@ -207,6 +210,17 @@ func (p *peer) route(origin *link, m Message) {
 	case TypeStep2, TypeUpdate:
 		if err := p.doc.ApplyUpdate(m.Payload, origin); err != nil {
 			p.track.fail(err)
+		}
+	case TypeQueryAwareness:
+		origin.send(AwarenessMessage(p.aware.Encode()))
+	case TypeAwareness:
+		_, reply, err := p.aware.Apply(m.Payload)
+		if err != nil {
+			p.track.fail(err)
+			return
+		}
+		if reply != nil {
+			p.broadcast(AwarenessMessage(reply), nil)
 		}
 	default:
 		// a newer peer talking about something this build has no opinion on
@@ -257,8 +271,14 @@ func connect(t *testing.T, a, b *peer, seed int64) {
 	c1, c2 := net.Pipe()
 	la := a.attach(t, c1, seed)
 	lb := b.attach(t, c2, seed+1)
-	la.send(Step1(a.doc.StateVector()))
-	lb.send(Step1(b.doc.StateVector()))
+	for _, side := range []struct {
+		l *link
+		p *peer
+	}{{la, a}, {lb, b}} {
+		side.l.send(Step1(side.p.doc.StateVector()))
+		side.l.send(QueryAwareness())
+		side.l.send(AwarenessMessage(side.p.aware.Encode(side.p.aware.ClientID())))
+	}
 }
 
 func requireConverged(t *testing.T, name string, peers ...*peer) {
@@ -559,5 +579,34 @@ func TestZeroLimitFallsBackToTheDefault(t *testing.T) {
 	}
 	if m.Type != TypeAwareness || string(m.Payload) != "hi" {
 		t.Errorf("got %v %q", m.Type, m.Payload)
+	}
+}
+
+func TestPresenceOverTheSameLink(t *testing.T) {
+	tr := newTracker()
+	a, b := newPeer(t, tr), newPeer(t, tr)
+	a.aware.SetLocalState([]byte("a at 0"))
+	b.aware.SetLocalState([]byte("b at 0"))
+	connect(t, a, b, 101)
+	tr.quiet(t)
+
+	if got := b.aware.States()[a.aware.ClientID()]; string(got) != "a at 0" {
+		t.Errorf("b sees a as %q, want %q", got, "a at 0")
+	}
+	if got := a.aware.States()[b.aware.ClientID()]; string(got) != "b at 0" {
+		t.Errorf("a sees b as %q, want %q", got, "b at 0")
+	}
+
+	a.broadcast(AwarenessMessage(a.aware.SetLocalState([]byte("a at 7"))), nil)
+	tr.quiet(t)
+	if got := b.aware.States()[a.aware.ClientID()]; string(got) != "a at 7" {
+		t.Errorf("after the move b sees a as %q, want %q", got, "a at 7")
+	}
+
+	// b thinks a's socket dropped and evicts it, a insists it is still here
+	b.broadcast(AwarenessMessage(b.aware.Remove(a.aware.ClientID())), nil)
+	tr.quiet(t)
+	if got := b.aware.States()[a.aware.ClientID()]; string(got) != "a at 7" {
+		t.Errorf("after the re-announcement b sees a as %q, want %q", got, "a at 7")
 	}
 }
