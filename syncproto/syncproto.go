@@ -45,8 +45,7 @@ type Message struct {
 }
 
 // ByteReader is what a framed read needs. Wrap a connection in ONE
-// *bufio.Reader for the life of that connection, never one per call, or you
-// lose the bytes buffered past the end of a message.
+// *bufio.Reader for its life, never one per call, or buffered bytes are lost.
 type ByteReader interface {
 	io.Reader
 	io.ByteReader
@@ -59,9 +58,8 @@ const DefaultMaxMessageSize = 16 << 20
 // ErrMalformedMessage is returned when a frame violates the framing rules.
 var ErrMalformedMessage = errors.New("syncproto: malformed message")
 
-// ErrMessageTooLarge is returned when a frame declares a payload larger than
-// the limit in force. The payload is not read, and the connection must be
-// closed: the stream is now out of sync.
+// ErrMessageTooLarge is returned when a frame declares a payload over the
+// limit in force. The payload is not read, so the connection must be closed.
 var ErrMessageTooLarge = errors.New("syncproto: message too large")
 
 // ReadMessage reads one length-prefixed message, bounded by
@@ -139,9 +137,8 @@ func EncodeMessageUnframed(m Message) []byte {
 	return append(b, m.Payload...)
 }
 
-// DecodeMessage decodes a message whose framing the transport already provides
-// (a WebSocket binary frame, a datagram). It expects NO length prefix, and the
-// returned Payload aliases frame.
+// DecodeMessage decodes a frame the transport already delimited, a WebSocket
+// binary message say. It takes NO length prefix and its Payload aliases frame.
 func DecodeMessage(frame []byte) (Message, error) { return split(frame) }
 
 // split separates the type byte from the body of an unprefixed frame.

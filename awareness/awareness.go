@@ -32,9 +32,8 @@ type entry struct {
 	lastSeen time.Time
 }
 
-// Awareness tracks per-client presence blobs: cursors, names, colours. State
-// payloads are opaque, since converge does not own your schema. Safe for
-// concurrent use.
+// Awareness tracks per-client presence blobs (cursors, names, colours) as
+// opaque bytes, since converge does not own your schema. Safe for concurrent use.
 type Awareness struct {
 	mu      sync.Mutex
 	local   converge.ClientID
@@ -96,14 +95,8 @@ func (a *Awareness) Encode(clients ...converge.ClientID) []byte {
 	return a.encode(slices.Compact(cs))
 }
 
-// Apply integrates a peer's awareness update.
-//
-// changed is exactly the set of clients whose state changed, the repaint list.
-// Nothing is applied when err is non-nil.
-//
-// reply is non-nil when update tried to remove this client's still-live local
-// state. It re-announces that state at a higher clock and MUST be broadcast, or
-// the local cursor disappears from every peer.
+// Apply integrates a peer's update and returns the repaint list. A non-nil
+// reply rescues a local state the update tried to evict and must be broadcast.
 func (a *Awareness) Apply(update []byte) (changed []converge.ClientID, reply []byte, err error) {
 	entries, err := decode(update)
 	if err != nil {
@@ -148,13 +141,8 @@ func (a *Awareness) Remove(clients ...converge.ClientID) (update []byte) {
 	return a.encode(cs)
 }
 
-// Tick is the periodic maintenance call, driven by the application's own ticker
-// (every RecommendedTickInterval against DefaultTimeout).
-//
-// It bumps the local clock and re-announces the local state so peers do not
-// time this client out, and it evicts remote clients not heard from within
-// timeout. Broadcast update, repaint removed. The local client is never
-// evicted, and taking now as a parameter is what makes expiry testable.
+// Tick re-announces the local state (broadcast update) and evicts remote
+// clients silent for longer than timeout (repaint removed). The local never goes.
 func (a *Awareness) Tick(now time.Time, timeout time.Duration) (update []byte, removed []converge.ClientID) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
