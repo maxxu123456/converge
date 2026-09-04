@@ -1,0 +1,34 @@
+Recorded on a quiet Apple M5 with
+
+    go test -run xxx -bench . -benchtime 1x -benchmem
+
+Another machine reads differently. What is committed here is the shape: an
+order-of-magnitude move in any row means a refactor changed the complexity of
+a path rather than its constant factor.
+
+goos: darwin
+goarch: arm64
+pkg: github.com/maxxu123456/converge
+cpu: Apple M5
+BenchmarkSequentialTyping-10          	       1	 667639625 ns/op	5387209160 B/op	  900283 allocs/op
+BenchmarkRemoteWhileTyping-10         	       1	  52230167 ns/op	82503392 B/op	  320079 allocs/op
+BenchmarkRandomInsert-10              	       1	  48539208 ns/op	 8078512 B/op	   80054 allocs/op
+BenchmarkSequentialDelete-10          	       1	  13920125 ns/op	56204480 B/op	   60004 allocs/op
+BenchmarkLoadUpdate-10                	       1	   3141583 ns/op	  35.24 MB/s	 1509192 B/op	    3094 allocs/op
+BenchmarkConcurrentMerge-10           	       1	   5181375 ns/op	 1679104 B/op	    6063 allocs/op
+BenchmarkString1MB-10                 	       1	    292083 ns/op	3590.08 MB/s	 1056768 B/op	       1 allocs/op
+BenchmarkEncodeStateAsUpdate1MB-10    	       1	   1754208 ns/op	 630.16 MB/s	 7627472 B/op	    2609 allocs/op
+
+Two rows need reading notes.
+
+SequentialTyping allocates 5.4 GB to type 100 000 runes. That is the design,
+not a leak. Every keystroke folds into the run before it and copying a string
+is the only way to grow one, so the bytes copied are quadratic in the length of
+an unbroken typing burst. The time is not, because the copy is a memmove.
+Anything that breaks the run (typing elsewhere, a remote insert, a delete)
+resets the cost.
+
+RemoteWhileTyping is the row that matters most. It is a tenth of the keystrokes
+of SequentialTyping and should stay near a tenth of its time. If it goes
+quadratic, the marker cache has started invalidating on a remote edit instead
+of adjusting, and every correctness test still passes.
