@@ -68,13 +68,34 @@ func (s *structStore) stateOf(c ClientID) uint64 {
 // stateVector returns the next expected clock for every client held.
 func (s *structStore) stateVector() map[ClientID]uint64 {
 	sv := make(map[ClientID]uint64, len(s.clients))
+	s.readStateVector(sv)
+	return sv
+}
+
+// readStateVector fills an already empty sv, so a caller with a map to spare
+// does not mint another one.
+func (s *structStore) readStateVector(sv map[ClientID]uint64) {
 	for c, cb := range s.clients {
 		// clock 0 is indistinguishable from absent, so it names nobody
 		if cb.next != 0 {
 			sv[c] = cb.next
 		}
 	}
-	return sv
+}
+
+// clocksMatch reports whether sv is exactly the store's state vector now.
+func (s *structStore) clocksMatch(sv map[ClientID]uint64) bool {
+	named := 0
+	for c, cb := range s.clients {
+		if cb.next == 0 {
+			continue
+		}
+		if sv[c] != cb.next {
+			return false
+		}
+		named++
+	}
+	return named == len(sv)
 }
 
 // add appends it to its client's blocks and panics on a gap or an overlap,

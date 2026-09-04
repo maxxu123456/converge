@@ -40,9 +40,18 @@ func (d *Doc) begin(origin any, local bool) *Tx {
 	if d.txOpen {
 		panic("converge: transaction already open")
 	}
-	d.tx = Tx{doc: d, origin: origin, local: local, before: d.store.stateVector(), deleted: deleteSet{}}
+	tx := &d.tx
+	if tx.before == nil {
+		tx.before, tx.deleted = map[ClientID]uint64{}, deleteSet{}
+	}
+	// the bookkeeping outlives the transaction, so a binding that applies an
+	// empty delta pays nothing for the round trip
+	clear(tx.before)
+	clear(tx.deleted)
+	tx.doc, tx.origin, tx.local, tx.closed, tx.merge = d, origin, local, false, tx.merge[:0]
+	d.store.readStateVector(tx.before)
 	d.txOpen = true
-	return &d.tx
+	return tx
 }
 
 // commit closes the transaction, releases the document lock and delivers what
@@ -56,7 +65,7 @@ func (d *Doc) commit(tx *Tx) {
 	retryPendingDeleteSet(tx)
 	d.recomputeMissing()
 	tx.deleted.normalize()
-	changed := !equalClocks(tx.before, d.store.stateVector()) || !tx.deleted.empty()
+	changed := !d.store.clocksMatch(tx.before) || !tx.deleted.empty()
 	tx.closed = true
 	d.txOpen = false
 	if !changed {
@@ -108,18 +117,6 @@ func (d *Doc) dispatch(n notification) {
 	for _, o := range uobs {
 		o.fn(n.update, n.origin)
 	}
-}
-
-func equalClocks(a, b map[ClientID]uint64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for c, clock := range a {
-		if b[c] != clock {
-			return false
-		}
-	}
-	return true
 }
 
 // check panics unless t belongs to tx's Doc and tx is still open.
