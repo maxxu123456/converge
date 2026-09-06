@@ -12,42 +12,37 @@ holding byte-identical state. Standard library only, no dependencies ever.
 d := converge.NewDoc()
 body := d.Text("body")
 body.Observe(func(ev converge.Event) { editor.Apply(ev.Delta) })
+
 d.Transact(nil, func(tx *converge.Tx) {
-	tx.Insert(body, 0, "hello")
-	tx.Insert(body, tx.Len(body), " world")
+	tx.Insert(body, 0, "hello world")
 })
 ```
 
 Read a Text through the tx inside a transaction. Calling `body.Len()` there
-deadlocks, because the callback already holds the document lock.
+deadlocks, because the callback already holds the document lock. Build with
+`-tags converge_debug` and it panics saying so instead of hanging.
 
 ## Syncing
 
-`syncproto` frames messages for any duplex byte stream. Both peers open with
-their own state vector and then run the same loop. Local edits go out from an
-`OnUpdate` observer as a TypeUpdate message.
+`syncproto` frames messages for any duplex byte stream. Peers open with their
+own state vector, answer someone else's with whatever that peer is missing,
+and apply what arrives.
 
 ```go
-r := bufio.NewReader(conn) // one for the life of the connection
-err := syncproto.WriteMessage(conn, syncproto.Step1(d.StateVector()))
-for err == nil {
-	var m syncproto.Message
-	if m, err = syncproto.ReadMessage(r); err != nil {
-		break
-	}
-	switch m.Type {
-	case syncproto.TypeStep1:
-		var sv converge.StateVector
-		if sv, err = converge.ParseStateVector(m.Payload); err == nil {
-			u := d.EncodeStateAsUpdate(sv)
-			err = syncproto.WriteMessage(conn, syncproto.Step2(u))
-		}
-	case syncproto.TypeStep2, syncproto.TypeUpdate:
-		err = d.ApplyUpdate(m.Payload, conn)
-	}
+syncproto.WriteMessage(conn, syncproto.Step1(d.StateVector()))
+
+m, err := syncproto.ReadMessage(bufio.NewReader(conn))
+switch m.Type {
+case syncproto.TypeStep1:
+	sv, _ := converge.ParseStateVector(m.Payload)
+	syncproto.WriteMessage(conn, syncproto.Step2(d.EncodeStateAsUpdate(sv)))
+case syncproto.TypeStep2, syncproto.TypeUpdate:
+	err = d.ApplyUpdate(m.Payload, conn)
 }
-return err
 ```
+
+`Text.Position` returns a cursor that survives concurrent edits, and
+`awareness` carries presence over the same link.
 
 ## Status
 
