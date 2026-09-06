@@ -1,7 +1,9 @@
 package converge
 
 import (
+	"bytes"
 	"fmt"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -167,5 +169,78 @@ func TestEventsArriveInCommitOrder(t *testing.T) {
 	}
 	if body.Len() != 2*perWriter {
 		t.Fatalf("document holds %d runes, want %d", body.Len(), 2*perWriter)
+	}
+}
+
+// exerciseAPI runs one lap of everything a caller can reach: two replicas,
+// local edits, a remote apply, observers, positions, encodings, read paths.
+func exerciseAPI(t *testing.T) {
+	t.Helper()
+	a := NewDocWith(Options{ClientID: 1})
+	b := NewDocWith(Options{ClientID: 2, MaxPendingStructs: 8})
+	at, bt := a.Text("body"), b.Text("body")
+	cancelUpd := a.OnUpdate(func(Update, any) {})
+	cancelTxt := at.Observe(func(Event) {})
+	a.Transact("typing", func(tx *Tx) {
+		tx.Insert(at, 0, "hello world")
+		tx.Insert(tx.Text("title"), 0, "\u4e2d\u6587")
+		tx.Delete(at, 0, 1)
+	})
+	u := a.EncodeStateAsUpdate(b.StateVector())
+	for i := 0; i < 2; i++ { // the second apply is the idempotence path
+		if err := b.ApplyUpdate(u, "remote"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	merged, err := MergeUpdates(u, b.EncodeStateAsUpdate(StateVector{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := merged.Diff(a.StateVector()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := merged.StateVector(); err != nil {
+		t.Fatal(err)
+	}
+	svBytes, err := a.StateVector().MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseStateVector(svBytes); err != nil {
+		t.Fatal(err)
+	}
+	posBytes, err := at.Position(2, AssocBefore).MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p Position
+	if err := p.UnmarshalBinary(posBytes); err != nil {
+		t.Fatal(err)
+	}
+	b.Resolve(p)
+	var buf bytes.Buffer
+	if _, err := bt.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	bt.Slice(0, bt.Len())
+	bt.RuneIndex(bt.UTF16Index(1))
+	bt.UTF16Len()
+	b.Stats()
+	b.Pending()
+	a.ClientID()
+	cancelTxt()
+	cancelUpd()
+}
+
+func TestNoGoroutines(t *testing.T) {
+	before := runtime.NumGoroutine()
+	exerciseAPI(t)
+	// a goroutine an earlier test left unwinding can still be counted, so let
+	// the scheduler drain before believing the number
+	for i := 0; i < 1000 && runtime.NumGoroutine() > before; i++ {
+		runtime.Gosched()
+	}
+	if after := runtime.NumGoroutine(); after > before {
+		t.Fatalf("the goroutine count went from %d to %d", before, after)
 	}
 }

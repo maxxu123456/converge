@@ -732,3 +732,60 @@ func TestPendingNamesTheLowestUnblockingClock(t *testing.T) {
 		t.Fatalf("waiting for client 1 from clock %d, want 2", got)
 	}
 }
+
+// TestReturnedSlicesAreOwned scribbles over every slice converge hands back,
+// then asks the document and its encodings whether they noticed.
+func TestReturnedSlicesAreOwned(t *testing.T) {
+	d := NewDocWith(Options{ClientID: 1})
+	body := d.Text("body")
+	var delivered []Delta
+	var relayed Update
+	d.OnUpdate(func(u Update, _ any) { relayed = u })
+	body.Observe(func(ev Event) { delivered = ev.Delta })
+	d.Transact(nil, func(tx *Tx) { tx.Insert(body, 0, "hello world") })
+	d.Transact(nil, func(tx *Tx) { tx.Delete(body, 0, 6) })
+
+	text := body.String()
+	update := d.EncodeStateAsUpdate(StateVector{})
+	wantUpdate := string(update)
+	svBytes, err := d.StateVector().MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSV := string(svBytes)
+	posBytes, err := body.Position(2, AssocAfter).MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPos := string(posBytes)
+	clients := d.StateVector().Clients()
+	if len(delivered) == 0 || len(relayed) == 0 || len(clients) == 0 {
+		t.Fatal("the observers came back empty, so this test proves nothing")
+	}
+
+	for _, b := range [][]byte{update, svBytes, posBytes, relayed} {
+		for i := range b {
+			b[i] = 0xff
+		}
+	}
+	for i := range delivered {
+		delivered[i] = Delta{Retain: 1 << 30}
+	}
+	for i := range clients {
+		clients[i] = 0
+	}
+
+	if got := body.String(); got != text {
+		t.Errorf("the document reads %q, want %q", got, text)
+	}
+	if got := string(d.EncodeStateAsUpdate(StateVector{})); got != wantUpdate {
+		t.Error("the update encoding changed")
+	}
+	if got, _ := d.StateVector().MarshalBinary(); string(got) != wantSV {
+		t.Error("the state vector encoding changed")
+	}
+	if got, _ := body.Position(2, AssocAfter).MarshalBinary(); string(got) != wantPos {
+		t.Error("the position encoding changed")
+	}
+	validate(t, d)
+}
