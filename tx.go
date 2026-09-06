@@ -22,6 +22,8 @@ type Tx struct {
 // fn commits what it had already applied and then propagates.
 func (d *Doc) Transact(origin any, fn func(tx *Tx)) {
 	d.mu.Lock()
+	d.noteTxEnter()
+	defer d.noteTxExit()
 	tx := d.begin(origin, true)
 	committed := false
 	// what fn already applied is in the list, so a panicking fn still commits
@@ -107,8 +109,9 @@ func (d *Doc) dispatch(n notification) {
 		tobs[i] = slices.Clone(ev.Text.obs)
 	}
 	uobs := slices.Clone(d.updObs)
+	prev := d.noteTxSuspend()
 	d.mu.Unlock()
-	defer d.mu.Lock()
+	defer func() { d.mu.Lock(); d.noteTxResume(prev) }()
 	for i, ev := range n.events {
 		for _, o := range tobs[i] {
 			o.fn(ev)

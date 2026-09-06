@@ -174,6 +174,9 @@ func BenchmarkEncodeStateAsUpdate1MB(b *testing.B) {
 }
 
 func TestEmptyTransactAllocatesNothing(t *testing.T) {
+	if debugBuild {
+		t.Skip("the debug tag allocates to read the goroutine id")
+	}
 	d := NewDocWith(Options{ClientID: 1})
 	body := d.Text("body")
 	d.Transact(nil, func(tx *Tx) { tx.Insert(body, 0, "seed") })
@@ -188,6 +191,9 @@ func TestEmptyTransactAllocatesNothing(t *testing.T) {
 const appendAllocBudget = 12
 
 func TestSteadyStateAppendStaysInBudget(t *testing.T) {
+	if debugBuild {
+		t.Skip("the debug tag allocates to read the goroutine id")
+	}
 	d := NewDocWith(Options{ClientID: 1})
 	body := d.Text("body")
 	n := testing.AllocsPerRun(200, func() {
