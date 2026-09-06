@@ -12,7 +12,7 @@ type Stats struct {
 
 // Stats returns a snapshot of this document's memory profile.
 func (d *Doc) Stats() Stats {
-	d.mu.Lock()
+	d.lock()
 	defer d.mu.Unlock()
 	s := Stats{Clients: len(d.store.clients), PendingStructs: d.pendingCount}
 	for _, cb := range d.store.clients {

@@ -3,12 +3,16 @@ package converge
 import (
 	"maps"
 	"sync"
+	"sync/atomic"
 )
 
 // Doc is a CRDT document: named Text values sharing one replica identity and
 // one causal history. Safe for concurrent use, but never copy one.
 type Doc struct {
 	mu sync.Mutex // guards everything below, never held across io or user code
+
+	// set to the goroutine inside Transact, under the converge_debug tag only
+	debugOwner atomic.Uint64
 
 	clientID   ClientID
 	maxPending int
@@ -49,6 +53,12 @@ type Options struct {
 	MaxPendingStructs int
 }
 
+// lock takes the document lock, refusing the call that would deadlock.
+func (d *Doc) lock() {
+	d.assertNotInTx()
+	d.mu.Lock()
+}
+
 // DefaultMaxPendingStructs is the default value of Options.MaxPendingStructs.
 const DefaultMaxPendingStructs = 1 << 16
 
@@ -77,7 +87,7 @@ func NewDocWith(opts Options) *Doc {
 // ClientID returns this replica's identity. Use it to skip drawing your own
 // remote cursor.
 func (d *Doc) ClientID() ClientID {
-	d.mu.Lock()
+	d.lock()
 	defer d.mu.Unlock()
 	return d.clientID
 }
@@ -86,7 +96,7 @@ func (d *Doc) ClientID() ClientID {
 // 1 to 255 bytes of valid UTF-8. Never call it from inside a Transact callback,
 // use Tx.Text.
 func (d *Doc) Text(name string) *Text {
-	d.mu.Lock()
+	d.lock()
 	defer d.mu.Unlock()
 	return d.text(name)
 }
@@ -108,7 +118,7 @@ func (d *Doc) Resolve(p Position) (t *Text, index int, ok bool) {
 	if !p.Valid() {
 		return nil, 0, false
 	}
-	d.mu.Lock()
+	d.lock()
 	defer d.mu.Unlock()
 	t = d.roots[p.name]
 	if t == nil {
@@ -134,7 +144,7 @@ func (d *Doc) Resolve(p Position) (t *Text, index int, ok bool) {
 // StateVector returns what this replica has seen: per client, the next clock
 // it expects. The result is a value safe to hold and to send.
 func (d *Doc) StateVector() StateVector {
-	d.mu.Lock()
+	d.lock()
 	defer d.mu.Unlock()
 	return StateVector{m: d.store.stateVector()}
 }
@@ -142,7 +152,7 @@ func (d *Doc) StateVector() StateVector {
 // EncodeStateAsUpdate returns everything this replica holds that the holder of
 // since does not. The zero StateVector means everything.
 func (d *Doc) EncodeStateAsUpdate(since StateVector) Update {
-	d.mu.Lock()
+	d.lock()
 	defer d.mu.Unlock()
 	// the delete set goes out whole whatever since says: tombstoning advances
 	// no clock, so a filtered one resurrects deleted text on the receiver
@@ -169,7 +179,7 @@ func (d *Doc) ApplyUpdate(u Update, origin any) error {
 	if err := validateUpdate(structs); err != nil {
 		return err
 	}
-	d.mu.Lock()
+	d.lock()
 	tx := d.begin(origin, false)
 	leftover, rejected := drive(tx, structs)
 	unapplied := applyDeleteSet(tx, ds)
@@ -191,7 +201,7 @@ func (d *Doc) ApplyUpdate(u Update, origin any) error {
 // lowest clock this replica has to reach before any of them can be integrated.
 // An n that does not fall back to zero means sending a fresh sync on every link.
 func (d *Doc) Pending() (n int, missing StateVector) {
-	d.mu.Lock()
+	d.lock()
 	defer d.mu.Unlock()
 	return d.pendingCount, StateVector{m: maps.Clone(d.missing)}
 }
@@ -199,7 +209,7 @@ func (d *Doc) Pending() (n int, missing StateVector) {
 // OnUpdate registers fn, called once per committed transaction that changed the
 // document. The returned func unregisters fn and is idempotent.
 func (d *Doc) OnUpdate(fn func(u Update, origin any)) (cancel func()) {
-	d.mu.Lock()
+	d.lock()
 	defer d.mu.Unlock()
 	return addObserver(d, &d.updObs, fn)
 }

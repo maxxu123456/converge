@@ -23,7 +23,7 @@ type Text struct {
 // Observe registers fn, called after each committed transaction that changed t.
 // fn runs with the document lock released, in commit order. cancel unregisters it.
 func (t *Text) Observe(fn func(Event)) (cancel func()) {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	defer t.doc.mu.Unlock()
 	return addObserver(t.doc, &t.obs, fn)
 }
@@ -34,7 +34,7 @@ func (t *Text) Name() string { return t.name }
 // Len returns the visible length in runes. Do not call it from inside a
 // Transact callback, use Tx.Len.
 func (t *Text) Len() int {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	defer t.doc.mu.Unlock()
 	return t.runeLen
 }
@@ -42,14 +42,14 @@ func (t *Text) Len() int {
 // String returns the visible text and satisfies fmt.Stringer. Do not call it
 // from inside a Transact callback, use Tx.String.
 func (t *Text) String() string {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	defer t.doc.mu.Unlock()
 	return t.visible()
 }
 
 // Slice returns the runes in [start, end). Panics with *RangeError out of range.
 func (t *Text) Slice(start, end int) string {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	defer t.doc.mu.Unlock()
 	checkSlice(t, start, end)
 	return t.visibleSlice(start, end)
@@ -58,7 +58,7 @@ func (t *Text) Slice(start, end int) string {
 // WriteTo writes the visible text to w and satisfies io.WriterTo. It never
 // holds the document lock while writing.
 func (t *Text) WriteTo(w io.Writer) (int64, error) {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	parts := make([]string, 0, 16)
 	for it := t.start; it != nil; it = it.right {
 		if !it.deleted {
@@ -81,7 +81,7 @@ func (t *Text) WriteTo(w io.Writer) (int64, error) {
 // UTF16Len returns the visible length in UTF-16 code units, which is what a
 // browser editor counts.
 func (t *Text) UTF16Len() int {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	defer t.doc.mu.Unlock()
 	return t.u16Len
 }
@@ -89,7 +89,7 @@ func (t *Text) UTF16Len() int {
 // UTF16Index converts a rune index in [0, Len()] to a UTF-16 code-unit offset.
 // Panics with *RangeError out of range.
 func (t *Text) UTF16Index(runeIndex int) int {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	defer t.doc.mu.Unlock()
 	if runeIndex < 0 || runeIndex > t.runeLen {
 		panic(rangeErr(t, runeIndex, 0))
@@ -100,7 +100,7 @@ func (t *Text) UTF16Index(runeIndex int) int {
 // RuneIndex converts a UTF-16 code-unit offset to a rune index. An offset
 // inside a surrogate pair rounds down to that pair, one past the end clamps.
 func (t *Text) RuneIndex(utf16Index int) int {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	defer t.doc.mu.Unlock()
 	return t.runeIndex(utf16Index)
 }
@@ -108,7 +108,7 @@ func (t *Text) RuneIndex(utf16Index int) int {
 // Position returns a sticky anchor for index that survives concurrent edits by
 // other replicas. index is clamped to [0, Len()], so Position never fails.
 func (t *Text) Position(index int, assoc Assoc) Position {
-	t.doc.mu.Lock()
+	t.doc.lock()
 	defer t.doc.mu.Unlock()
 	if assoc != AssocBefore {
 		// one value per side, so == still answers "did that cursor move?"
