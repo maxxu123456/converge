@@ -3,6 +3,9 @@ name: Build and test
 on:
   push:
   pull_request:
+  schedule:
+    # nightly, at an hour nobody is pushing
+    - cron: "17 4 * * *"
 
 jobs:
   build:
@@ -15,3 +18,35 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
+
+  nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # every delivery interleaving, where a push run only gets the prefix of
+      # the space that fits in a normal test
+      - run: go test -run TestExhaustiveDeliveryInterleavings -converge.exhaustive -timeout 120m .
+
+      # a seed nobody has tried, and enough steps to build deep histories. The
+      # failure message carries the seed, which is what reproduces it locally.
+      - run: go test -run TestSimulatedReplicasConverge -converge.seed=${{ github.run_id }} -converge.steps=10000 -timeout 60m .
+
+      - name: fuzz each target for ten minutes
+        run: |
+          for target in FuzzDecodeUpdate FuzzMergeUpdates FuzzConverge FuzzPosition; do
+            go test -run '^$' -fuzz "^${target}$" -fuzztime 10m .
+          done
+
+      # go test writes a failing input next to the seed corpus, so keep it
+      - name: upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: testdata/fuzz

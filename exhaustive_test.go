@@ -2,7 +2,9 @@ package converge
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -16,6 +18,10 @@ type exAction struct {
 }
 
 const exClients = 3
+
+// exFull lifts the trace budget so a nightly run walks the whole space instead
+// of the prefix of it that fits in a normal test run.
+var exFull = flag.Bool("converge.exhaustive", false, "walk every trace, not a bounded sample")
 
 // exWide covers the edit shapes. The deep alphabets drop most of them to buy
 // one more action: one stacks runes at a caret, one anchors inside a run.
@@ -39,7 +45,10 @@ var (
 // twice, must read what the oracle reads. Random traces hit these shapes rarely.
 func TestExhaustiveDeliveryInterleavings(t *testing.T) {
 	wide, deep := 6000, 7000
-	if testing.Short() {
+	switch {
+	case *exFull:
+		wide, deep = math.MaxInt, math.MaxInt
+	case testing.Short():
 		wide, deep = 600, 700
 	}
 	n := exSearch(t, exWide, 3, wide)
